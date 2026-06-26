@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
+import Link from "next/link"
 import {
   Activity,
   BarChart3,
@@ -24,6 +25,7 @@ import {
 
 import { AnimatedCounter } from "@/components/AnimatedCounter"
 import { CyberCard } from "@/components/CyberCard"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -42,6 +44,7 @@ const CHART_COLORS = ["#00f0ff", "#14b8a6", "#22d3ee", "#2dd4bf", "#06b6d4"]
 export function LiveDashboard() {
   const {
     session,
+    products,
     progress,
     totalExpectedItems,
     totalCountedItems,
@@ -49,6 +52,9 @@ export function LiveDashboard() {
     counterStats,
     blind,
   } = useInventory()
+
+  const skuCount = products.length
+  const needsPopisnaImport = skuCount > 0 && totalExpectedItems === 0
 
   const pieData = useMemo(
     () => [
@@ -90,18 +96,46 @@ export function LiveDashboard() {
         </p>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      {needsPopisnaImport ? (
+        <Alert className="border-amber-500/30 bg-amber-500/10">
+          <AlertTitle className="text-amber-200">
+            Šifrarnik je uvezen, ali popisna lista nije
+          </AlertTitle>
+          <AlertDescription className="text-amber-200/80">
+            Imate {skuCount.toLocaleString("sr-RS")} šifri, ali sve očekivane količine
+            su 0. Pri uvozu šifrarnika nije mapirana kolona količine.{" "}
+            <Link href="/import/popisna" className="font-medium underline">
+              Uvezite popisnu listu
+            </Link>{" "}
+            (šifra + količina) da dashboard prikaže ciljne vrednosti.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <CyberCard className="p-5" glow="cyan">
           <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-400/70">
             <Package className="size-4" />
-            Ukupno artikala
+            Šifri u šifrarniku
+          </div>
+          <AnimatedCounter
+            value={skuCount}
+            className="mt-2 block font-mono text-3xl font-bold text-cyan-300"
+          />
+          <p className="mt-1 text-xs text-zinc-500">ukupno artikala za popis</p>
+        </CyberCard>
+
+        <CyberCard className="p-5" glow="cyan">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-cyan-400/70">
+            <Package className="size-4" />
+            Popisano komada
           </div>
           <AnimatedCounter
             value={totalCountedItems}
             className="mt-2 block font-mono text-3xl font-bold text-cyan-300"
           />
           <p className="mt-1 text-xs text-zinc-500">
-            od {totalExpectedItems.toLocaleString("sr-RS")} očekivanih
+            od {totalExpectedItems.toLocaleString("sr-RS")} očekivanih komada
           </p>
         </CyberCard>
 

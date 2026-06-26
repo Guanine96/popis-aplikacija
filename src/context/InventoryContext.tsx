@@ -27,6 +27,11 @@ interface ImportPayload {
   blindInventory: boolean
 }
 
+interface PopisnaImportPayload {
+  mapping: Record<string, string>
+  rows: Record<string, string>[]
+}
+
 interface InventoryContextValue {
   session: InventorySession
   products: Product[]
@@ -49,6 +54,9 @@ interface InventoryContextValue {
   getCountForSku: (sku: string) => number
   getProduct: (query: string) => Product | null
   applyImport: (payload: ImportPayload) => Promise<number>
+  applyPopisnaImport: (
+    payload: PopisnaImportPayload,
+  ) => Promise<{ updated: number; missing: number }>
 }
 
 const InventoryContext = createContext<InventoryContextValue | null>(null)
@@ -438,6 +446,75 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [orgId, user, supabase, loadInventory],
   )
 
+  const applyPopisnaImport = useCallback(
+    async ({ mapping, rows }: PopisnaImportPayload) => {
+      if (!orgId) throw new Error("Nema organizacije")
+
+      const skuCol = mapping.sku
+      const qtyCol = mapping.expectedQty
+      if (!skuCol || skuCol === UNMAPPED_VALUE) throw new Error("Mapirajte šifru")
+      if (!qtyCol || qtyCol === UNMAPPED_VALUE) throw new Error("Mapirajte količinu")
+
+      const { data: activeVersion } = await supabase
+        .from("sifrarnik_versions")
+        .select("id")
+        .eq("company_id", orgId)
+        .eq("is_active", true)
+        .maybeSingle()
+
+      if (!activeVersion) throw new Error("Prvo uvezite šifrarnik")
+
+      const { data: existingItems } = await supabase
+        .from("sifrarnik_items")
+        .select("id, sifra")
+        .eq("sifrarnik_version_id", activeVersion.id)
+
+      const itemIdBySifra = new Map(
+        (existingItems ?? []).map((item) => [item.sifra.trim(), item.id]),
+      )
+
+      const updates: Array<{ sifra: string; qty: number }> = []
+      let missing = 0
+
+      for (const row of rows) {
+        const sifra = row[skuCol]?.trim()
+        if (!sifra) continue
+        const qty = parseNumber(row[qtyCol] || "0")
+        if (!itemIdBySifra.has(sifra)) {
+          missing += 1
+          continue
+        }
+        updates.push({ sifra, qty })
+      }
+
+      const chunkSize = 80
+      for (let i = 0; i < updates.length; i += chunkSize) {
+        const chunk = updates.slice(i, i + chunkSize)
+        await Promise.all(
+          chunk.map(({ sifra, qty }) =>
+            supabase
+              .from("sifrarnik_items")
+              .update({ kolicina_na_zal: qty })
+              .eq("id", itemIdBySifra.get(sifra)!),
+          ),
+        )
+        await Promise.all(
+          chunk.map(({ sifra, qty }) =>
+            supabase
+              .from("popis_items")
+              .update({ ciljana_kolicina: Math.round(qty) })
+              .eq("company_id", orgId)
+              .eq("sifra", sifra),
+          ),
+        )
+      }
+
+      await loadInventory()
+      return { updated: updates.length, missing }
+    },
+    [orgId, supabase, loadInventory],
+  )
+
   const value = useMemo<InventoryContextValue>(
     () => ({
       session,
@@ -456,6 +533,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       getCountForSku,
       getProduct,
       applyImport,
+      applyPopisnaImport,
     }),
     [
       session,
@@ -473,6 +551,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       getCountForSku,
       getProduct,
       applyImport,
+      applyPopisnaImport,
     ],
   )
 

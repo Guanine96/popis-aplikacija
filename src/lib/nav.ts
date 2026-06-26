@@ -1,5 +1,6 @@
 import {
   ClipboardList,
+  FileSpreadsheet,
   LayoutDashboard,
   Shield,
   Upload,
@@ -25,8 +26,15 @@ export const ADMIN_NAV: NavItem[] = [
   {
     href: "/import",
     label: "Uvoz šifrarnika",
-    short: "Uvoz",
+    short: "Šifrarnik",
     icon: Upload,
+    adminOnly: true,
+  },
+  {
+    href: "/import/popisna",
+    label: "Uvoz popisne liste",
+    short: "Popisna",
+    icon: FileSpreadsheet,
     adminOnly: true,
   },
   {

@@ -3,47 +3,49 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, ArrowRight, CheckCircle2, Database } from "lucide-react"
+import {
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+} from "lucide-react"
 import { toast } from "sonner"
 
-import { ColumnMapper } from "@/components/ColumnMapper"
+import { PopisnaColumnMapper } from "@/components/PopisnaColumnMapper"
 import { CyberCard } from "@/components/CyberCard"
 import { AuthGate, RoleGate } from "@/components/AuthGate"
 import { FileDropzone } from "@/components/import-wizard/file-dropzone"
 import { WizardStepper } from "@/components/import-wizard/wizard-stepper"
 import { useInventory } from "@/context/InventoryContext"
-import { autoMap, SYSTEM_FIELDS, UNMAPPED_VALUE } from "@/lib/import-fields"
+import { UNMAPPED_VALUE } from "@/lib/import-fields"
+import { autoMapPopisna, POPISNA_FIELDS } from "@/lib/popisna-import-fields"
 import { parseFile } from "@/lib/parse-file"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
 const STEPS = [
-  { id: 1, title: "Učitavanje datoteke", subtitle: "CSV ili XLSX" },
-  { id: 2, title: "Mapiranje kolona", subtitle: "Povezivanje polja" },
+  { id: 1, title: "Popisna lista", subtitle: "CSV ili XLSX" },
+  { id: 2, title: "Mapiranje", subtitle: "Šifra + količina" },
 ]
 
-function ImportWizardContent() {
+function PopisnaImportContent() {
   const router = useRouter()
-  const { applyImport } = useInventory()
+  const { applyPopisnaImport, products } = useInventory()
   const [currentStep, setCurrentStep] = useState(1)
   const [file, setFile] = useState<File | null>(null)
-  const [parsed, setParsed] = useState<Awaited<ReturnType<typeof parseFile>> | null>(null)
+  const [parsed, setParsed] = useState<Awaited<ReturnType<typeof parseFile>> | null>(
+    null,
+  )
   const [isParsing, setIsParsing] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mapping, setMapping] = useState<Record<string, string>>({})
-  const [blindInventory, setBlindInventory] = useState(false)
 
   const requiredMapped = useMemo(
     () =>
-      SYSTEM_FIELDS.filter((f) => f.required).every(
+      POPISNA_FIELDS.filter((f) => f.required).every(
         (f) => mapping[f.id] && mapping[f.id] !== UNMAPPED_VALUE,
       ),
-    [mapping],
-  )
-
-  const mappedCount = useMemo(
-    () =>
-      Object.values(mapping).filter((v) => v && v !== UNMAPPED_VALUE).length,
     [mapping],
   )
 
@@ -55,7 +57,7 @@ function ImportWizardContent() {
     try {
       const result = await parseFile(selected)
       setParsed(result)
-      setMapping(autoMap(result.headers))
+      setMapping(autoMapPopisna(result.headers))
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Greška pri obradi datoteke.",
@@ -69,39 +71,48 @@ function ImportWizardContent() {
 
   async function handleImport() {
     if (!parsed) return
-    const count = await applyImport({
-      mapping,
-      rows: parsed.allRows,
-      blindInventory,
-    })
-    toast.success("Šifrarnik uvezen", {
-      description: `${count} artikala spremno za popis.`,
-    })
-    router.push("/dashboard")
+    setIsImporting(true)
+    try {
+      const result = await applyPopisnaImport({
+        mapping,
+        rows: parsed.allRows,
+      })
+      toast.success("Popisna lista uvezena", {
+        description: `${result.updated} ažurirano · ${result.missing} šifara nije u šifrarniku`,
+      })
+      router.push("/dashboard")
+    } catch {
+      toast.error("Uvoz nije uspeo", {
+        description: "Proverite mapiranje kolona i pokušajte ponovo.",
+      })
+    } finally {
+      setIsImporting(false)
+    }
   }
 
   return (
     <CyberCard className="w-full max-w-3xl overflow-hidden">
       <div className="flex flex-col gap-4 p-6">
         <div className="flex items-center gap-3">
-          <span className="flex size-10 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-400 ring-1 ring-cyan-500/40">
-            <Database className="size-5" />
+          <span className="flex size-10 items-center justify-center rounded-lg bg-teal-500/15 text-teal-400 ring-1 ring-teal-500/40">
+            <ClipboardList className="size-5" />
           </span>
           <div>
-            <h1 className="text-xl font-bold text-zinc-100">Uvoz šifrarnika</h1>
+            <h1 className="text-xl font-bold text-zinc-100">Uvoz popisne liste</h1>
             <p className="text-sm text-zinc-500">
-              Artikli: šifra, naziv, cena, barkod. Količine uvezite na{" "}
-              <Link href="/import/popisna" className="text-teal-400 underline">
-                Popisna lista
-              </Link>
-              .
+              Knjigovodstvene količine za postojeći šifrarnik ({products.length.toLocaleString("sr-RS")} šifri)
             </p>
           </div>
         </div>
+        <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-sm text-amber-200/90">
+          Prvo uvezite <Link href="/import" className="underline">šifrarnik</Link> (šifra,
+          naziv, cena). Zatim ovde uvezite popisnu listu sa kolonama šifra + količina.
+          Ne briše već popisane stavke.
+        </p>
         <WizardStepper steps={STEPS} currentStep={currentStep} />
       </div>
 
-      <Separator className="bg-cyan-500/10" />
+      <Separator className="bg-teal-500/10" />
 
       <div className="p-6">
         {currentStep === 1 ? (
@@ -119,19 +130,17 @@ function ImportWizardContent() {
             }}
           />
         ) : parsed ? (
-          <ColumnMapper
+          <PopisnaColumnMapper
             headers={parsed.headers}
             mapping={mapping}
-            blindInventory={blindInventory}
             onMappingChange={(fieldId, header) =>
               setMapping((p) => ({ ...p, [fieldId]: header }))
             }
-            onBlindInventoryChange={setBlindInventory}
           />
         ) : null}
       </div>
 
-      <Separator className="bg-cyan-500/10" />
+      <Separator className="bg-teal-500/10" />
 
       <div className="flex items-center justify-between gap-4 p-6">
         <div className="flex items-center gap-2 text-sm text-zinc-500">
@@ -140,7 +149,7 @@ function ImportWizardContent() {
               <CheckCircle2
                 className={requiredMapped ? "size-4 text-teal-400" : "size-4 opacity-40"}
               />
-              {mappedCount} / {SYSTEM_FIELDS.length} polja mapirano
+              Mapiranje spremno
             </>
           ) : (
             <span>Korak {currentStep} od {STEPS.length}</span>
@@ -155,20 +164,20 @@ function ImportWizardContent() {
           )}
           {currentStep === 1 ? (
             <Button
-              disabled={!parsed || isParsing}
+              disabled={!parsed || isParsing || products.length === 0}
               onClick={() => setCurrentStep(2)}
-              className="bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
+              className="bg-teal-500/20 text-teal-300 ring-1 ring-teal-500/40"
             >
               Nastavi
               <ArrowRight data-icon="inline-end" />
             </Button>
           ) : (
             <Button
-              disabled={!requiredMapped}
+              disabled={!requiredMapped || isImporting}
               onClick={handleImport}
               className="bg-teal-500/20 text-teal-300 ring-1 ring-teal-500/40"
             >
-              Pokreni uvoz
+              {isImporting ? "Uvozim…" : "Uvezi popisnu listu"}
               <ArrowRight data-icon="inline-end" />
             </Button>
           )}
@@ -178,12 +187,12 @@ function ImportWizardContent() {
   )
 }
 
-export default function ImportPage() {
+export default function PopisnaImportPage() {
   return (
     <AuthGate>
       <RoleGate role="admin">
         <div className="flex w-full justify-center">
-          <ImportWizardContent />
+          <PopisnaImportContent />
         </div>
       </RoleGate>
     </AuthGate>
