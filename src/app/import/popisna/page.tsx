@@ -181,7 +181,7 @@ function PopisnaImportContent() {
               onClick={handleImport}
               className="bg-teal-500/20 text-teal-300 ring-1 ring-teal-500/40"
             >
-              {isImporting ? "Uvozim…" : "Uvezi popisnu listu"}
+              {isImporting ? "Uvozim u delovima…" : "Uvezi popisnu listu"}
               <ArrowRight data-icon="inline-end" />
             </Button>
           )}

@@ -508,24 +508,35 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         })
         .filter((row): row is { sifra: string; qty: number } => row !== null)
 
-      const { data, error } = await supabase.rpc("import_popisna_lista", {
-        p_company_id: orgId,
-        p_rows: payload,
-      })
+      const chunkSize = 400
+      let totalUpdated = 0
+      let totalMissing = 0
 
-      if (error) {
-        throw new Error(error.message)
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const chunk = payload.slice(i, i + chunkSize)
+        const { data, error } = await supabase.rpc("import_popisna_lista", {
+          p_company_id: orgId,
+          p_rows: chunk,
+          p_reset: i === 0,
+        })
+
+        if (error) {
+          throw new Error(error.message)
+        }
+
+        if (!data) {
+          throw new Error("Server nije vratio rezultat uvoza")
+        }
+
+        const result = data as { updated: number; missing: number }
+        totalUpdated += Number(result.updated ?? 0)
+        totalMissing += Number(result.missing ?? 0)
       }
 
-      if (!data) {
-        throw new Error("Server nije vratio rezultat uvoza")
-      }
-
-      const result = data as { updated: number; missing: number }
       await loadInventory()
       return {
-        updated: Number(result.updated ?? 0),
-        missing: Number(result.missing ?? 0),
+        updated: totalUpdated,
+        missing: totalMissing,
       }
     },
     [orgId, supabase, loadInventory],
