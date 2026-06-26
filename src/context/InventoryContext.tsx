@@ -190,12 +190,22 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       )
       .on(
         "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "profiles", filter: `company_id=eq.${orgId}` },
+        () => loadInventory(),
+      )
+      .on(
+        "postgres_changes",
         { event: "UPDATE", schema: "public", table: "companies", filter: `id=eq.${orgId}` },
         () => loadInventory(),
       )
       .subscribe()
 
+    const poll = window.setInterval(() => {
+      void loadInventory()
+    }, 15000)
+
     return () => {
+      window.clearInterval(poll)
       supabase.removeChannel(channel)
     }
   }, [supabase, orgId, loadInventory])
@@ -262,16 +272,22 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     (query: string) => {
       const q = query.trim().toLowerCase()
       if (!q) return null
+
       const exact = products.find(
-        (p) => p.barcode.toLowerCase() === q || p.sku.toLowerCase() === q,
+        (p) =>
+          p.barcode.toLowerCase() === q ||
+          p.sku.toLowerCase() === q,
       )
       if (exact) return exact
+
+      if (q.length < 2) return null
+
       return (
         products.find(
           (p) =>
-            p.sku.toLowerCase().includes(q) ||
+            p.sku.toLowerCase() === q ||
             p.name.toLowerCase().includes(q) ||
-            p.barcode.includes(q),
+            (p.barcode && p.barcode.toLowerCase().includes(q)),
         ) ?? null
       )
     },
@@ -280,13 +296,32 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
   const confirmCount = useCallback(
     async (sku: string, quantity: number) => {
-      if (!user || !orgId) return
-      await supabase.from("count_events").insert({
-        company_id: orgId,
-        profile_id: user.id,
-        sifra: sku,
-        quantity,
-      })
+      if (!user || !orgId) {
+        throw new Error("Niste prijavljeni")
+      }
+
+      const { data, error } = await supabase
+        .from("count_events")
+        .insert({
+          company_id: orgId,
+          profile_id: user.id,
+          sifra: sku,
+          quantity,
+        })
+        .select("id, sifra, quantity, confirmed_at, profile_id")
+        .single()
+
+      if (error) throw error
+
+      setCounts((prev) => [
+        ...prev,
+        {
+          sku: data.sifra,
+          counterId: data.profile_id,
+          quantity: data.quantity,
+          confirmedAt: data.confirmed_at,
+        },
+      ])
     },
     [user, orgId, supabase],
   )

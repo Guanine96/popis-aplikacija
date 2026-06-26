@@ -22,13 +22,16 @@ import { cn } from "@/lib/utils"
 
 export function PopisMobileView() {
   const { user, logout } = useAuth()
-  const { session, blind, getProduct, getCountForSku, confirmCount } =
+  const { session, blind, products, isLoading, getProduct, getCountForSku, confirmCount } =
     useInventory()
-
   const [query, setQuery] = useState("")
   const [product, setProduct] = useState<Product | null>(null)
   const [quantity, setQuantity] = useState("")
   const [scannerOpen, setScannerOpen] = useState(false)
+  const [cameraPromise, setCameraPromise] = useState<Promise<MediaStream> | null>(
+    null,
+  )
+  const [submitting, setSubmitting] = useState(false)
 
   const qty = quantity === "" ? 0 : Number.parseInt(quantity, 10)
 
@@ -43,15 +46,50 @@ export function PopisMobileView() {
     }
   }
 
+  function openScanner() {
+    if (navigator.mediaDevices?.getUserMedia) {
+      setCameraPromise(
+        navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false,
+        }),
+      )
+    } else {
+      setCameraPromise(null)
+    }
+    setScannerOpen(true)
+  }
+
   async function handleConfirm() {
-    if (!product) return
-    await confirmCount(product.sku, qty)
-    toast.success("Unos potvrđen", {
-      description: `${product.name}: ${qty} kom`,
-    })
-    setProduct(null)
-    setQuery("")
-    setQuantity("")
+    if (!product || submitting) return
+    if (qty <= 0) {
+      toast.error("Unesite količinu veću od 0")
+      return
+    }
+    setSubmitting(true)
+    try {
+      await confirmCount(product.sku, qty)
+      toast.success("Unos potvrđen", {
+        description: `${product.name}: ${qty} kom`,
+      })
+      setProduct(null)
+      setQuery("")
+      setQuantity("")
+    } catch {
+      toast.error("Unos nije sačuvan", {
+        description: "Proverite internet i pokušajte ponovo.",
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex h-dvh items-center justify-center bg-zinc-950 text-sm text-zinc-500">
+        Učitavanje šifrarnika…
+      </div>
+    )
   }
 
   return (
@@ -93,7 +131,7 @@ export function PopisMobileView() {
           />
           <Button
             size="icon"
-            onClick={() => setScannerOpen(true)}
+            onClick={openScanner}
             className="size-14 shrink-0 bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
           >
             <ScanBarcode className="size-6" />
@@ -143,6 +181,7 @@ export function PopisMobileView() {
 
             <Button
               onClick={handleConfirm}
+              disabled={submitting || qty <= 0}
               className={cn(
                 "h-[4.25rem] shrink-0 rounded-2xl text-base font-bold uppercase tracking-widest sm:text-lg",
                 "bg-teal-500/20 text-teal-300 ring-1 ring-teal-500/50",
@@ -160,15 +199,27 @@ export function PopisMobileView() {
             <p className="text-sm text-zinc-500">
               Skenirajte barkod ili unesite šifru artikla
             </p>
+            <p className="text-xs text-zinc-600">
+              {products.length.toLocaleString("sr-RS")} artikala u šifrarniku
+            </p>
+            <p className="max-w-xs text-xs text-amber-400/80">
+              Ako skeniranje ne pronađe artikal, ukucajte šifru (npr. 3, 4, 5) i
+              Enter.
+            </p>
           </div>
         )}
       </div>
 
       <BarcodeScanner
         open={scannerOpen}
-        onOpenChange={setScannerOpen}
+        mediaPromise={cameraPromise}
+        onOpenChange={(open) => {
+          setScannerOpen(open)
+          if (!open) setCameraPromise(null)
+        }}
         onResult={(code) => {
           setScannerOpen(false)
+          setCameraPromise(null)
           setQuery(code)
           selectByQuery(code)
         }}
