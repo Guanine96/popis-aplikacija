@@ -12,6 +12,7 @@ import {
 
 import { useAuth } from "@/context/AuthContext"
 import { UNMAPPED_VALUE } from "@/lib/import-fields"
+import { normalizeBarcode } from "@/lib/normalize-barcode"
 import { normalizeSifra } from "@/lib/normalize-sifra"
 import { createClient } from "@/lib/supabase/client"
 import { fetchAllPages } from "@/lib/supabase/fetch-all"
@@ -148,6 +149,46 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .limit(1)
       .maybeSingle()
 
+    const { data: activePopis } = await supabase
+      .from("popis")
+      .select("id")
+      .eq("company_id", orgId)
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    let popisnaLoaded = false
+    if (activePopis) {
+      const lines = await fetchAllPages((from, to) =>
+        supabase
+          .from("popis_items")
+          .select("sifra, naziv, bar_kod, ciljana_kolicina, popisano, cena")
+          .eq("company_id", orgId)
+          .eq("popis_id", activePopis.id)
+          .order("sifra")
+          .range(from, to),
+      )
+
+      setPopisnaLines(
+        lines.map((line) => ({
+          sku: line.sifra,
+          name: line.naziv,
+          barcode: line.bar_kod ?? "",
+          targetQty: Number(line.ciljana_kolicina ?? 0),
+          countedQty: Number(line.popisano ?? 0),
+          price: Number(line.cena ?? 0),
+        })),
+      )
+      popisnaLoaded = lines.length > 0
+    } else {
+      setPopisnaLines([])
+    }
+
+    if (popisnaLoaded) {
+      setIsLoading(false)
+    }
+
     if (activeVersion) {
       const items = await fetchAllPages((from, to) =>
         supabase
@@ -168,39 +209,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       )
     } else {
       setProducts([])
-    }
-
-    const { data: activePopis } = await supabase
-      .from("popis")
-      .select("id")
-      .eq("company_id", orgId)
-      .eq("status", "ACTIVE")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (activePopis) {
-      const lines = await fetchAllPages((from, to) =>
-        supabase
-          .from("popis_items")
-          .select("sifra, naziv, ciljana_kolicina, popisano, cena")
-          .eq("company_id", orgId)
-          .eq("popis_id", activePopis.id)
-          .order("sifra")
-          .range(from, to),
-      )
-
-      setPopisnaLines(
-        lines.map((line) => ({
-          sku: line.sifra,
-          name: line.naziv,
-          targetQty: Number(line.ciljana_kolicina ?? 0),
-          countedQty: Number(line.popisano ?? 0),
-          price: Number(line.cena ?? 0),
-        })),
-      )
-    } else {
-      setPopisnaLines([])
     }
 
     const events = await fetchAllPages((from, to) =>
@@ -257,7 +265,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
     const poll = window.setInterval(() => {
       void loadInventory()
-    }, 15000)
+    }, 5000)
 
     return () => {
       window.clearInterval(poll)
@@ -336,33 +344,57 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [popisnaBySku],
   )
 
+  const productLookup = useMemo(() => {
+    const bySku = new Map<string, Product>()
+    const byBarcode = new Map<string, Product>()
+
+    const register = (product: Product) => {
+      bySku.set(product.sku, product)
+      bySku.set(normalizeSifra(product.sku), product)
+      const bc = product.barcode.trim()
+      if (bc) {
+        byBarcode.set(bc, product)
+        byBarcode.set(normalizeBarcode(bc), product)
+      }
+    }
+
+    for (const line of popisnaLines) {
+      register({
+        sku: line.sku,
+        name: line.name,
+        barcode: line.barcode,
+        price: line.price,
+      })
+    }
+
+    for (const product of products) {
+      if (!bySku.has(product.sku)) {
+        register(product)
+      } else if (product.barcode.trim()) {
+        const bc = normalizeBarcode(product.barcode)
+        if (!byBarcode.has(bc)) {
+          register(product)
+        }
+      }
+    }
+
+    return { bySku, byBarcode }
+  }, [popisnaLines, products])
+
   const getProduct = useCallback(
     (query: string) => {
       const raw = query.trim()
       if (!raw) return null
-      const q = raw.toLowerCase()
-      const norm = normalizeSifra(raw)
-
-      const exact = products.find(
-        (p) =>
-          p.barcode.toLowerCase() === q ||
-          p.sku.toLowerCase() === q ||
-          normalizeSifra(p.sku) === norm,
-      )
-      if (exact) return exact
-
-      if (q.length < 2) return null
 
       return (
-        products.find(
-          (p) =>
-            normalizeSifra(p.sku) === norm ||
-            p.name.toLowerCase().includes(q) ||
-            (p.barcode && p.barcode.toLowerCase().includes(q)),
-        ) ?? null
+        productLookup.byBarcode.get(raw) ??
+        productLookup.byBarcode.get(normalizeBarcode(raw)) ??
+        productLookup.bySku.get(raw) ??
+        productLookup.bySku.get(normalizeSifra(raw)) ??
+        null
       )
     },
-    [products],
+    [productLookup],
   )
 
   const confirmCount = useCallback(
