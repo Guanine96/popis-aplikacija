@@ -78,12 +78,15 @@ function PopisnaImportContent() {
         rows: parsed.allRows,
       })
       toast.success("Popisna lista uvezena", {
-        description: `${result.updated} ažurirano · ${result.missing} šifara nije u šifrarniku`,
+        description: `${result.updated} stavki · ${result.missing} nije u šifrarniku`,
       })
       router.push("/dashboard")
-    } catch {
+    } catch (error) {
       toast.error("Uvoz nije uspeo", {
-        description: "Proverite mapiranje kolona i pokušajte ponovo.",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Proverite mapiranje kolona i pokušajte ponovo.",
       })
     } finally {
       setIsImporting(false)

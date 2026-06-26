@@ -513,7 +513,13 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         p_rows: payload,
       })
 
-      if (error) throw error
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      if (!data) {
+        throw new Error("Server nije vratio rezultat uvoza")
+      }
 
       const result = data as { updated: number; missing: number }
       await loadInventory()
