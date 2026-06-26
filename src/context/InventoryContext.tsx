@@ -1,0 +1,453 @@
+"use client"
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
+
+import { useAuth } from "@/context/AuthContext"
+import { UNMAPPED_VALUE } from "@/lib/import-fields"
+import { createClient } from "@/lib/supabase/client"
+import type {
+  AppUser,
+  CountEntry,
+  InventorySession,
+  Product,
+  Subscription,
+} from "@/lib/types"
+
+interface ImportPayload {
+  mapping: Record<string, string>
+  rows: Record<string, string>[]
+  blindInventory: boolean
+}
+
+interface InventoryContextValue {
+  session: InventorySession
+  products: Product[]
+  counts: CountEntry[]
+  subscription: Subscription
+  blind: boolean
+  totalExpectedItems: number
+  totalCountedItems: number
+  totalFinancialValue: number
+  progress: number
+  counterStats: Array<{
+    user: AppUser
+    itemsCounted: number
+    financialValue: number
+    progress: number
+  }>
+  isLoading: boolean
+  setBlind: (blind: boolean) => Promise<void>
+  confirmCount: (sku: string, quantity: number) => Promise<void>
+  getCountForSku: (sku: string) => number
+  getProduct: (query: string) => Product | null
+  applyImport: (payload: ImportPayload) => Promise<number>
+}
+
+const InventoryContext = createContext<InventoryContextValue | null>(null)
+
+function parseNumber(value: string): number {
+  const normalized = value.replace(/\s/g, "").replace(",", ".")
+  const num = Number.parseFloat(normalized)
+  return Number.isFinite(num) ? num : 0
+}
+
+type CompanyRow = {
+  id: string
+  name: string
+  plan: string
+  subscription_status: string
+  seats_total: number
+  renews_on: string | null
+  session_name: string
+  session_location: string
+  blind_inventory: boolean
+  created_at: string
+}
+
+export function InventoryProvider({ children }: { children: ReactNode }) {
+  const { user, users, orgId } = useAuth()
+  const supabase = useMemo(() => createClient(), [])
+  const [session, setSession] = useState<InventorySession>({
+    id: "",
+    name: "",
+    location: "",
+    blind: false,
+    createdAt: new Date().toISOString(),
+  })
+  const [subscription, setSubscription] = useState<Subscription>({
+    plan: "Pro",
+    status: "aktivna",
+    seatsTotal: 5,
+    renewsOn: "",
+  })
+  const [products, setProducts] = useState<Product[]>([])
+  const [counts, setCounts] = useState<CountEntry[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+
+  const loadInventory = useCallback(async () => {
+    if (!orgId) {
+      setIsLoading(false)
+      return
+    }
+
+    setIsLoading(true)
+
+    const { data: company } = await supabase
+      .from("companies")
+      .select("*")
+      .eq("id", orgId)
+      .single()
+
+    if (company) {
+      const row = company as CompanyRow
+      setSession({
+        id: row.id,
+        name: row.session_name,
+        location: row.session_location,
+        blind: row.blind_inventory,
+        createdAt: row.created_at,
+      })
+      setSubscription({
+        plan: row.plan,
+        status: row.subscription_status as Subscription["status"],
+        seatsTotal: row.seats_total,
+        renewsOn: row.renews_on ?? "",
+      })
+    }
+
+    const { data: activeVersion } = await supabase
+      .from("sifrarnik_versions")
+      .select("id")
+      .eq("company_id", orgId)
+      .eq("is_active", true)
+      .order("upload_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (activeVersion) {
+      const { data: items } = await supabase
+        .from("sifrarnik_items")
+        .select("*")
+        .eq("sifrarnik_version_id", activeVersion.id)
+        .order("sifra")
+
+      if (items) {
+        setProducts(
+          items.map((p) => ({
+            sku: p.sifra,
+            barcode: p.bar_kod ?? "",
+            name: p.naziv,
+            expectedQty: Number(p.kolicina_na_zal ?? 0),
+            price: Number(p.cena ?? 0),
+          })),
+        )
+      }
+    } else {
+      setProducts([])
+    }
+
+    const { data: events } = await supabase
+      .from("count_events")
+      .select("*")
+      .eq("company_id", orgId)
+      .order("confirmed_at")
+
+    if (events) {
+      setCounts(
+        events.map((c) => ({
+          sku: c.sifra,
+          counterId: c.profile_id,
+          quantity: c.quantity,
+          confirmedAt: c.confirmed_at,
+        })),
+      )
+    }
+
+    setIsLoading(false)
+  }, [orgId, supabase])
+
+  useEffect(() => {
+    loadInventory()
+  }, [loadInventory])
+
+  useEffect(() => {
+    if (!orgId) return
+
+    const channel = supabase
+      .channel("inventory-live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "count_events", filter: `company_id=eq.${orgId}` },
+        () => loadInventory(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "companies", filter: `id=eq.${orgId}` },
+        () => loadInventory(),
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [supabase, orgId, loadInventory])
+
+  const totalExpectedItems = useMemo(
+    () => products.reduce((sum, p) => sum + p.expectedQty, 0),
+    [products],
+  )
+
+  const totalCountedItems = useMemo(
+    () => counts.reduce((sum, c) => sum + c.quantity, 0),
+    [counts],
+  )
+
+  const totalFinancialValue = useMemo(
+    () =>
+      counts.reduce((sum, c) => {
+        const product = products.find((p) => p.sku === c.sku)
+        return sum + (product ? product.price * c.quantity : 0)
+      }, 0),
+    [counts, products],
+  )
+
+  const progress =
+    totalExpectedItems === 0
+      ? 0
+      : Math.min(100, (totalCountedItems / totalExpectedItems) * 100)
+
+  const counterStats = useMemo(() => {
+    return users
+      .filter((u) => u.role === "popisivac")
+      .map((counter) => {
+        const userCounts = counts.filter((c) => c.counterId === counter.id)
+        const userQty = userCounts.reduce((s, c) => s + c.quantity, 0)
+        const userProgress =
+          totalExpectedItems === 0
+            ? 0
+            : Math.min(100, (userQty / totalExpectedItems) * 100)
+
+        return {
+          user: counter,
+          itemsCounted: counter.itemsCounted,
+          financialValue: counter.financialValue,
+          progress: userProgress,
+        }
+      })
+  }, [users, counts, totalExpectedItems])
+
+  const setBlind = useCallback(
+    async (blind: boolean) => {
+      if (!orgId) return
+      await supabase.from("companies").update({ blind_inventory: blind }).eq("id", orgId)
+      setSession((prev) => ({ ...prev, blind }))
+    },
+    [orgId, supabase],
+  )
+
+  const getCountForSku = useCallback(
+    (sku: string) => counts.filter((c) => c.sku === sku).reduce((s, e) => s + e.quantity, 0),
+    [counts],
+  )
+
+  const getProduct = useCallback(
+    (query: string) => {
+      const q = query.trim().toLowerCase()
+      if (!q) return null
+      const exact = products.find(
+        (p) => p.barcode.toLowerCase() === q || p.sku.toLowerCase() === q,
+      )
+      if (exact) return exact
+      return (
+        products.find(
+          (p) =>
+            p.sku.toLowerCase().includes(q) ||
+            p.name.toLowerCase().includes(q) ||
+            p.barcode.includes(q),
+        ) ?? null
+      )
+    },
+    [products],
+  )
+
+  const confirmCount = useCallback(
+    async (sku: string, quantity: number) => {
+      if (!user || !orgId) return
+      await supabase.from("count_events").insert({
+        company_id: orgId,
+        profile_id: user.id,
+        sifra: sku,
+        quantity,
+      })
+    },
+    [user, orgId, supabase],
+  )
+
+  const applyImport = useCallback(
+    async ({ mapping, rows, blindInventory }: ImportPayload) => {
+      if (!orgId || !user) return 0
+
+      const imported = rows
+        .map((row) => {
+          const skuCol = mapping.sku
+          const nameCol = mapping.name
+          const priceCol = mapping.price
+          if (!skuCol || skuCol === UNMAPPED_VALUE) return null
+          if (!nameCol || nameCol === UNMAPPED_VALUE) return null
+          if (!priceCol || priceCol === UNMAPPED_VALUE) return null
+
+          const sku = row[skuCol]?.trim()
+          const name = row[nameCol]?.trim()
+          if (!sku || !name) return null
+
+          const barcodeCol = mapping.barcode
+          const qtyCol = mapping.expectedQty
+
+          return {
+            sifra: sku,
+            naziv: name,
+            bar_kod:
+              barcodeCol && barcodeCol !== UNMAPPED_VALUE
+                ? row[barcodeCol]?.trim() || ""
+                : "",
+            kolicina_na_zal:
+              qtyCol && qtyCol !== UNMAPPED_VALUE
+                ? parseNumber(row[qtyCol] || "0")
+                : 0,
+            cena: parseNumber(row[priceCol] || "0"),
+          }
+        })
+        .filter((p): p is NonNullable<typeof p> => p !== null)
+
+      await supabase
+        .from("sifrarnik_versions")
+        .update({ is_active: false })
+        .eq("company_id", orgId)
+
+      const versionLabel = `v${new Date().toISOString().slice(0, 10)}`
+      const { data: version } = await supabase
+        .from("sifrarnik_versions")
+        .insert({
+          company_id: orgId,
+          version: versionLabel,
+          is_active: true,
+          column_mapping: mapping,
+        })
+        .select("id")
+        .single()
+
+      if (!version) return 0
+
+      if (imported.length > 0) {
+        await supabase.from("sifrarnik_items").insert(
+          imported.map((p) => ({
+            sifrarnik_version_id: version.id,
+            ...p,
+          })),
+        )
+      }
+
+      await supabase.from("count_events").delete().eq("company_id", orgId)
+      await supabase
+        .from("profiles")
+        .update({ items_counted: 0, financial_value: 0 })
+        .eq("company_id", orgId)
+
+      const {
+        data: { user: authUser },
+      } = await supabase.auth.getUser()
+      if (!authUser) return 0
+
+      const popisId = `POPIS-${orgId.slice(0, 8)}`
+      await supabase.from("popis").upsert({
+        id: popisId,
+        company_id: orgId,
+        created_by: authUser.id,
+        end_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        status: "ACTIVE",
+        sifrarnik_version_id: version.id,
+      })
+
+      await supabase.from("popis_items").delete().eq("company_id", orgId)
+      if (imported.length > 0) {
+        await supabase.from("popis_items").insert(
+          imported.map((p) => ({
+            popis_id: popisId,
+            company_id: orgId,
+            sifra: p.sifra,
+            naziv: p.naziv,
+            bar_kod: p.bar_kod,
+            ciljana_kolicina: Math.round(p.kolicina_na_zal),
+            popisano: 0,
+            cena: p.cena,
+          })),
+        )
+      }
+
+      await supabase
+        .from("companies")
+        .update({ blind_inventory: blindInventory })
+        .eq("id", orgId)
+
+      await loadInventory()
+      return imported.length
+    },
+    [orgId, user, supabase, loadInventory],
+  )
+
+  const value = useMemo<InventoryContextValue>(
+    () => ({
+      session,
+      products,
+      counts,
+      subscription,
+      blind: session.blind,
+      totalExpectedItems,
+      totalCountedItems,
+      totalFinancialValue,
+      progress,
+      counterStats,
+      isLoading,
+      setBlind,
+      confirmCount,
+      getCountForSku,
+      getProduct,
+      applyImport,
+    }),
+    [
+      session,
+      products,
+      counts,
+      subscription,
+      totalExpectedItems,
+      totalCountedItems,
+      totalFinancialValue,
+      progress,
+      counterStats,
+      isLoading,
+      setBlind,
+      confirmCount,
+      getCountForSku,
+      getProduct,
+      applyImport,
+    ],
+  )
+
+  return (
+    <InventoryContext.Provider value={value}>{children}</InventoryContext.Provider>
+  )
+}
+
+export function useInventory() {
+  const ctx = useContext(InventoryContext)
+  if (!ctx) throw new Error("useInventory mora biti unutar InventoryProvider-a")
+  return ctx
+}

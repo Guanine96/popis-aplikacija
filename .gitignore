@@ -1,0 +1,22 @@
+.vercel
+.env*
+!.env.local.example
+
+# dependencies
+node_modules
+.pnpm-store
+
+# next.js
+.next
+out
+
+# build
+dist
+*.tsbuildinfo
+
+# debug
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
