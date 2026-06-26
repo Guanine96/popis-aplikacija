@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo } from "react"
 import Link from "next/link"
 import {
   Activity,
@@ -50,9 +50,16 @@ export function LiveDashboard() {
     totalExpectedItems,
     totalCountedItems,
     totalFinancialValue,
+    totalExpectedFinancialValue,
     counterStats,
     blind,
+    refreshInventory,
   } = useInventory()
+
+  useEffect(() => {
+    const poll = window.setInterval(() => refreshInventory(), 5000)
+    return () => window.clearInterval(poll)
+  }, [refreshInventory])
 
   const needsPopisnaImport = sifrarnikCount > 0 && popisnaLineCount === 0
 
@@ -163,7 +170,9 @@ export function LiveDashboard() {
             format={formatCurrency}
             className="mt-2 block font-mono text-3xl font-bold text-teal-300"
           />
-          <p className="mt-1 text-xs text-zinc-500">količina × cena</p>
+          <p className="mt-1 text-xs text-zinc-500">
+            cena iz popisne liste × popisano
+          </p>
         </CyberCard>
 
         <CyberCard className="p-5" glow="cyan">

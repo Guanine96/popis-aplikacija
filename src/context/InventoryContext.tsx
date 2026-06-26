@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -48,6 +49,7 @@ interface InventoryContextValue {
   totalExpectedItems: number
   totalCountedItems: number
   totalFinancialValue: number
+  totalExpectedFinancialValue: number
   progress: number
   counterStats: Array<{
     user: AppUser
@@ -56,6 +58,7 @@ interface InventoryContextValue {
     progress: number
   }>
   isLoading: boolean
+  refreshInventory: () => void
   setBlind: (blind: boolean) => Promise<void>
   confirmCount: (sku: string, quantity: number) => Promise<void>
   getCountForSku: (sku: string) => number
@@ -108,14 +111,17 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [popisnaLines, setPopisnaLines] = useState<PopisnaLine[]>([])
   const [counts, setCounts] = useState<CountEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const hasLoadedRef = useRef(false)
 
-  const loadInventory = useCallback(async () => {
+  const loadInventory = useCallback(async (silent = false) => {
     if (!orgId) {
       setIsLoading(false)
       return
     }
 
-    setIsLoading(true)
+    if (!silent) {
+      setIsLoading(true)
+    }
 
     const { data: company } = await supabase
       .from("companies")
@@ -230,10 +236,15 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     )
 
     setIsLoading(false)
+    hasLoadedRef.current = true
   }, [orgId, supabase])
 
+  const refreshInventory = useCallback(() => {
+    void loadInventory(true)
+  }, [loadInventory])
+
   useEffect(() => {
-    loadInventory()
+    void loadInventory(false)
   }, [loadInventory])
 
   useEffect(() => {
@@ -244,34 +255,29 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "count_events", filter: `company_id=eq.${orgId}` },
-        () => loadInventory(),
+        () => refreshInventory(),
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "popis_items", filter: `company_id=eq.${orgId}` },
-        () => loadInventory(),
+        () => refreshInventory(),
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "profiles", filter: `company_id=eq.${orgId}` },
-        () => loadInventory(),
+        () => refreshInventory(),
       )
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "companies", filter: `id=eq.${orgId}` },
-        () => loadInventory(),
+        () => refreshInventory(),
       )
       .subscribe()
 
-    const poll = window.setInterval(() => {
-      void loadInventory()
-    }, 5000)
-
     return () => {
-      window.clearInterval(poll)
       supabase.removeChannel(channel)
     }
-  }, [supabase, orgId, loadInventory])
+  }, [supabase, orgId, refreshInventory])
 
   const popisnaBySku = useMemo(
     () => new Map(popisnaLines.map((line) => [line.sku, line])),
@@ -294,10 +300,15 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const totalFinancialValue = useMemo(
     () =>
       counts.reduce((sum, c) => {
-        const product = products.find((p) => p.sku === c.sku)
-        return sum + (product ? product.price * c.quantity : 0)
+        const line = popisnaBySku.get(c.sku)
+        return sum + (line?.price ?? 0) * c.quantity
       }, 0),
-    [counts, products],
+    [counts, popisnaBySku],
+  )
+
+  const totalExpectedFinancialValue = useMemo(
+    () => popisnaLines.reduce((sum, line) => sum + line.price * line.targetQty, 0),
+    [popisnaLines],
   )
 
   const progress =
@@ -311,6 +322,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .map((counter) => {
         const userCounts = counts.filter((c) => c.counterId === counter.id)
         const userQty = userCounts.reduce((s, c) => s + c.quantity, 0)
+        const userFinancial = userCounts.reduce((sum, c) => {
+          const line = popisnaBySku.get(c.sku)
+          return sum + (line?.price ?? 0) * c.quantity
+        }, 0)
         const userProgress =
           totalExpectedItems === 0
             ? 0
@@ -318,12 +333,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
 
         return {
           user: counter,
-          itemsCounted: counter.itemsCounted,
-          financialValue: counter.financialValue,
+          itemsCounted: userQty,
+          financialValue: userFinancial,
           progress: userProgress,
         }
       })
-  }, [users, counts, totalExpectedItems])
+  }, [users, counts, totalExpectedItems, popisnaBySku])
 
   const setBlind = useCallback(
     async (blind: boolean) => {
@@ -587,9 +602,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       totalExpectedItems,
       totalCountedItems,
       totalFinancialValue,
+      totalExpectedFinancialValue,
       progress,
       counterStats,
       isLoading,
+      refreshInventory,
       setBlind,
       confirmCount,
       getCountForSku,
@@ -609,9 +626,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       totalExpectedItems,
       totalCountedItems,
       totalFinancialValue,
+      totalExpectedFinancialValue,
       progress,
       counterStats,
       isLoading,
+      refreshInventory,
       setBlind,
       confirmCount,
       getCountForSku,

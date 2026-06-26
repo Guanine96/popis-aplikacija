@@ -1,19 +1,21 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser"
 import { toast } from "sonner"
 import {
   ArrowRight,
   Check,
   EyeOff,
+  Keyboard,
   LogOut,
   ScanBarcode,
+  ScanLine,
 } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
 import { useInventory } from "@/context/InventoryContext"
 import { NumericKeypad } from "@/components/count/numeric-keypad"
-import { BarcodeScanner } from "@/components/count/barcode-scanner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -33,33 +35,40 @@ export function PopisMobileView() {
 
   const [product, setProduct] = useState<ReturnType<typeof getProduct>>(null)
   const [quantity, setQuantity] = useState("1")
-  const [scannerOpen, setScannerOpen] = useState(false)
-  const [cameraPromise, setCameraPromise] = useState<Promise<MediaStream> | null>(
-    null,
-  )
   const [submitting, setSubmitting] = useState(false)
-  const autoScanStarted = useRef(false)
+  const [manualMode, setManualMode] = useState(false)
+  const [manualCode, setManualCode] = useState("")
+  const [cameraActive, setCameraActive] = useState(false)
+  const [cameraStatus, setCameraStatus] = useState<
+    "idle" | "starting" | "scanning" | "error"
+  >("idle")
+  const [cameraError, setCameraError] = useState<string | null>(null)
+
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const controlsRef = useRef<IScannerControls | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const scanningPausedRef = useRef(false)
 
   const qty = quantity === "" ? 0 : Number.parseInt(quantity, 10)
 
-  const openScanner = useCallback(() => {
-    if (navigator.mediaDevices?.getUserMedia) {
-      setCameraPromise(
-        navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
-          audio: false,
-        }),
-      )
-    } else {
-      setCameraPromise(null)
+  const stopCamera = useCallback(() => {
+    controlsRef.current?.stop()
+    controlsRef.current = null
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
     }
-    setScannerOpen(true)
+    setCameraStatus("idle")
   }, [])
 
   const handleScanResult = useCallback(
     (code: string) => {
-      setScannerOpen(false)
-      setCameraPromise(null)
+      if (scanningPausedRef.current) return
+
+      scanningPausedRef.current = true
+      setManualMode(false)
+      setManualCode("")
 
       const found = getProduct(code)
       if (found) {
@@ -72,16 +81,71 @@ export function PopisMobileView() {
       toast.error("Nije u popisu", {
         description: `Kod ${code} — proverite barkod ili šifru.`,
       })
-      window.setTimeout(() => openScanner(), 700)
+      window.setTimeout(() => {
+        scanningPausedRef.current = false
+      }, 800)
     },
-    [getProduct, openScanner],
+    [getProduct],
   )
 
+  const startCamera = useCallback(async () => {
+    if (cameraActive || product) return
+
+    setCameraError(null)
+    setCameraStatus("starting")
+
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Kamera nije podržana u ovom pregledaču.")
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      })
+
+      const video = videoRef.current
+      if (!video) {
+        stream.getTracks().forEach((track) => track.stop())
+        throw new Error("Video nije spreman.")
+      }
+
+      streamRef.current = stream
+      video.srcObject = stream
+      video.setAttribute("playsinline", "true")
+      await video.play()
+
+      const reader = new BrowserMultiFormatReader()
+      const controls = await reader.decodeFromStream(stream, video, (result) => {
+        if (result) handleScanResult(result.getText())
+      })
+      controlsRef.current = controls
+      setCameraActive(true)
+      setCameraStatus("scanning")
+    } catch (error) {
+      stopCamera()
+      setCameraActive(false)
+      setCameraStatus("error")
+      setManualMode(true)
+      setCameraError(
+        error instanceof Error
+          ? error.message
+          : "Dozvolite pristup kameri u podešavanjima pregledača.",
+      )
+    }
+  }, [cameraActive, product, handleScanResult, stopCamera])
+
   useEffect(() => {
-    if (isLoading || autoScanStarted.current || popisnaLineCount === 0) return
-    autoScanStarted.current = true
-    openScanner()
-  }, [isLoading, popisnaLineCount, openScanner])
+    return () => {
+      stopCamera()
+    }
+  }, [stopCamera])
+
+  function submitManualCode() {
+    const code = manualCode.trim()
+    if (!code) return
+    handleScanResult(code)
+  }
 
   async function handleConfirm() {
     if (!product || submitting) return
@@ -98,7 +162,7 @@ export function PopisMobileView() {
       })
       setProduct(null)
       setQuantity("1")
-      window.setTimeout(() => openScanner(), 350)
+      scanningPausedRef.current = false
     } catch {
       toast.error("Unos nije sačuvan", {
         description: "Proverite internet i pokušajte ponovo.",
@@ -129,8 +193,8 @@ export function PopisMobileView() {
   }
 
   return (
-    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      <header className="flex shrink-0 items-center justify-between border-b border-cyan-500/10 px-4 py-2.5">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-zinc-950 pt-[env(safe-area-inset-top)]">
+      <header className="z-20 flex shrink-0 items-center justify-between border-b border-cyan-500/10 bg-zinc-950 px-4 py-2.5">
         <div>
           <p className="text-[10px] uppercase tracking-wider text-zinc-500">
             {session.name}
@@ -158,122 +222,219 @@ export function PopisMobileView() {
         </div>
       </header>
 
-      {product ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          <div className="rounded-2xl border border-cyan-500/25 bg-zinc-900/90 p-4">
-            <p className="text-[10px] uppercase tracking-[0.25em] text-cyan-500/80">
-              Artikal
-            </p>
-            <p className="mt-1 text-xl font-bold leading-snug text-zinc-50">
-              {product.name}
-            </p>
-            <p className="mt-2 font-mono text-xs text-zinc-500">
-              Šifra {product.sku}
-              {product.barcode ? ` · ${product.barcode}` : ""}
-            </p>
-            {!blind && getTargetQty(product.sku) > 0 && (
-              <p className="mt-2 text-sm text-teal-400">
-                Očekivano: {getTargetQty(product.sku)} kom
-              </p>
-            )}
-            {getCountForSku(product.sku) > 0 && (
-              <p className="mt-1 text-xs text-cyan-400/80">
-                Već popisano: {getCountForSku(product.sku)} kom
-              </p>
-            )}
-          </div>
+      <div className="relative min-h-0 flex-1">
+        <video
+          ref={videoRef}
+          className={cn(
+            "absolute inset-0 size-full object-cover",
+            product || manualMode ? "opacity-0" : "opacity-100",
+          )}
+          muted
+          playsInline
+          autoPlay
+        />
 
-          <div className="flex items-center justify-center gap-2">
-            {[1, 5, 10].map((preset) => (
+        {!product && !manualMode ? (
+          <div className="absolute inset-0 flex flex-col bg-black/40">
+            <div className="pointer-events-none flex flex-1 items-center justify-center p-6">
+              <div className="relative h-40 w-72 max-w-[85%]">
+                {[
+                  "left-0 top-0 border-l-2 border-t-2",
+                  "right-0 top-0 border-r-2 border-t-2",
+                  "bottom-0 left-0 border-b-2 border-l-2",
+                  "bottom-0 right-0 border-b-2 border-r-2",
+                ].map((pos) => (
+                  <span
+                    key={pos}
+                    className={cn("absolute size-8 border-cyan-400", pos)}
+                  />
+                ))}
+                <span className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 animate-pulse bg-cyan-400/80" />
+              </div>
+            </div>
+
+            <div className="shrink-0 space-y-3 bg-gradient-to-t from-zinc-950 via-zinc-950/95 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6">
+              {!cameraActive ? (
+                <Button
+                  onClick={() => void startCamera()}
+                  className="h-14 w-full rounded-2xl bg-cyan-500/25 text-base text-cyan-200 ring-1 ring-cyan-500/50"
+                >
+                  <ScanLine data-icon="inline-start" className="size-5" />
+                  Pokreni kameru
+                </Button>
+              ) : (
+                <p className="text-center text-sm text-cyan-200/90">
+                  {cameraStatus === "starting"
+                    ? "Pokretanje kamere…"
+                    : "Usmeri kameru ka barkodu"}
+                </p>
+              )}
+
               <Button
-                key={preset}
-                type="button"
                 variant="ghost"
-                onClick={() => setQuantity(String(preset))}
+                onClick={() => {
+                  setManualMode(true)
+                  setManualCode("")
+                }}
+                className="h-12 w-full text-zinc-300"
+              >
+                <Keyboard data-icon="inline-start" />
+                Unesi šifru ručno
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {!product && manualMode ? (
+          <div className="absolute inset-0 flex flex-col bg-zinc-950">
+            <div className="flex-1 overflow-y-auto p-4">
+              {cameraError ? (
+                <p className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                  {cameraError}
+                </p>
+              ) : null}
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  submitManualCode()
+                }}
+                className="flex flex-col gap-3"
+              >
+                <label className="text-[10px] uppercase tracking-[0.25em] text-zinc-500">
+                  Šifra ili barkod
+                </label>
+                <input
+                  autoFocus
+                  value={manualCode}
+                  onChange={(event) => setManualCode(event.target.value)}
+                  inputMode="text"
+                  placeholder="npr. 7900 ili barkod"
+                  className="h-14 w-full rounded-xl border border-cyan-500/25 bg-zinc-900 px-4 font-mono text-lg text-zinc-100 placeholder:text-zinc-600 focus-visible:border-cyan-500/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/30"
+                />
+              </form>
+            </div>
+
+            <div className="shrink-0 space-y-2 border-t border-cyan-500/10 bg-zinc-950 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <Button
+                type="button"
+                onClick={submitManualCode}
+                disabled={!manualCode.trim()}
+                className="h-14 w-full rounded-2xl bg-teal-500/25 text-base font-bold text-teal-200 ring-1 ring-teal-500/50"
+              >
+                <Check data-icon="inline-start" />
+                POTVRDI KOD
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setManualMode(false)
+                  if (!cameraActive) void startCamera()
+                }}
+                className="h-11 w-full text-zinc-400"
+              >
+                <ScanLine data-icon="inline-start" />
+                Nazad na kameru
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {product ? (
+          <div className="absolute inset-0 flex flex-col bg-zinc-950">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-2">
+              <div className="rounded-2xl border border-cyan-500/25 bg-zinc-900/90 p-4">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-cyan-500/80">
+                  Artikal
+                </p>
+                <p className="mt-1 text-xl font-bold leading-snug text-zinc-50">
+                  {product.name}
+                </p>
+                <p className="mt-2 font-mono text-xs text-zinc-500">
+                  Šifra {product.sku}
+                  {product.barcode ? ` · ${product.barcode}` : ""}
+                </p>
+                {!blind && getTargetQty(product.sku) > 0 && (
+                  <p className="mt-2 text-sm text-teal-400">
+                    Očekivano: {getTargetQty(product.sku)} kom
+                  </p>
+                )}
+                {getCountForSku(product.sku) > 0 && (
+                  <p className="mt-1 text-xs text-cyan-400/80">
+                    Već popisano: {getCountForSku(product.sku)} kom
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-center gap-2">
+                {[1, 5, 10].map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setQuantity(String(preset))}
+                    className={cn(
+                      "h-10 min-w-12 rounded-xl font-mono text-base",
+                      quantity === String(preset)
+                        ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
+                        : "text-zinc-500",
+                    )}
+                  >
+                    {preset}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="mt-3 flex flex-col items-center rounded-xl border border-cyan-500/20 bg-zinc-900/50 py-2">
+                <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">
+                  Količina
+                </span>
+                <span className="font-mono text-5xl font-bold tabular-nums text-cyan-300">
+                  {quantity === "" ? "0" : quantity}
+                </span>
+              </div>
+
+              <div className="mt-3">
+                <NumericKeypad
+                  compact
+                  onDigit={(d) =>
+                    setQuantity((p) => (p === "0" ? d : (p + d).slice(0, 6)))
+                  }
+                  onBackspace={() => setQuantity((p) => p.slice(0, -1))}
+                  onClear={() => setQuantity("")}
+                />
+              </div>
+            </div>
+
+            <div className="shrink-0 space-y-2 border-t border-cyan-500/10 bg-zinc-950 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <Button
+                onClick={handleConfirm}
+                disabled={submitting || qty <= 0}
                 className={cn(
-                  "h-11 min-w-14 rounded-xl font-mono text-lg",
-                  quantity === String(preset)
-                    ? "bg-cyan-500/20 text-cyan-300 ring-1 ring-cyan-500/40"
-                    : "text-zinc-500",
+                  "h-14 w-full rounded-2xl text-base font-bold uppercase tracking-wide",
+                  "bg-teal-500/25 text-teal-200 ring-1 ring-teal-500/50",
+                  "active:scale-[0.98]",
                 )}
               >
-                {preset}
+                <Check data-icon="inline-start" className="size-5" />
+                POTVRDI I SKENIRAJ
+                <ArrowRight data-icon="inline-end" className="size-5" />
               </Button>
-            ))}
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setProduct(null)
+                  setQuantity("1")
+                  scanningPausedRef.current = false
+                }}
+                className="h-10 w-full text-zinc-500"
+              >
+                <ScanBarcode data-icon="inline-start" />
+                Nazad na skener
+              </Button>
+            </div>
           </div>
-
-          <div className="flex flex-col items-center rounded-xl border border-cyan-500/20 bg-zinc-900/50 py-3">
-            <span className="text-[10px] uppercase tracking-[0.3em] text-zinc-500">
-              Količina
-            </span>
-            <span className="font-mono text-6xl font-bold tabular-nums text-cyan-300">
-              {quantity === "" ? "0" : quantity}
-            </span>
-          </div>
-
-          <div className="min-h-0 flex-1">
-            <NumericKeypad
-              onDigit={(d) =>
-                setQuantity((p) => (p === "0" ? d : (p + d).slice(0, 6)))
-              }
-              onBackspace={() => setQuantity((p) => p.slice(0, -1))}
-              onClear={() => setQuantity("")}
-            />
-          </div>
-
-          <Button
-            onClick={handleConfirm}
-            disabled={submitting || qty <= 0}
-            className={cn(
-              "h-[4.25rem] shrink-0 rounded-2xl text-base font-bold uppercase tracking-wide",
-              "bg-teal-500/25 text-teal-200 ring-1 ring-teal-500/50",
-              "active:scale-[0.98]",
-            )}
-          >
-            <Check data-icon="inline-start" className="size-6" />
-            POTVRDI I SKENIRAJ
-            <ArrowRight data-icon="inline-end" className="size-5" />
-          </Button>
-
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setProduct(null)
-              setQuantity("1")
-              openScanner()
-            }}
-            className="text-zinc-500"
-          >
-            <ScanBarcode data-icon="inline-start" />
-            Nazad na skener
-          </Button>
-        </div>
-      ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-          <ScanBarcode className="size-16 text-cyan-500/50" />
-          <p className="text-lg font-medium text-zinc-200">Skeniraj sledeći artikal</p>
-          <p className="max-w-xs text-sm text-zinc-500">
-            Kamera se otvara automatski. Posle potvrde količine vraćate se na skeniranje.
-          </p>
-          <Button
-            onClick={openScanner}
-            className="mt-2 h-14 rounded-2xl bg-cyan-500/20 px-8 text-base text-cyan-300 ring-1 ring-cyan-500/40"
-          >
-            <ScanBarcode data-icon="inline-start" className="size-5" />
-            Otvori kameru
-          </Button>
-        </div>
-      )}
-
-      <BarcodeScanner
-        open={scannerOpen}
-        mediaPromise={cameraPromise}
-        onOpenChange={(open) => {
-          setScannerOpen(open)
-          if (!open) setCameraPromise(null)
-        }}
-        onResult={handleScanResult}
-      />
+        ) : null}
+      </div>
     </div>
   )
 }
