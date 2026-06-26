@@ -1,8 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser"
+import { type IScannerControls } from "@zxing/browser"
 import { AlertCircle, Keyboard, ScanLine } from "lucide-react"
+
+import {
+  createBarcodeReader,
+  requestBarcodeCameraStream,
+  waitForVideoReady,
+} from "@/lib/barcode-camera"
 
 import {
   Dialog,
@@ -58,7 +64,9 @@ export function BarcodeScanner({
       video.setAttribute("playsinline", "true")
       await video.play()
 
-      const reader = new BrowserMultiFormatReader()
+      await waitForVideoReady(video)
+
+      const reader = createBarcodeReader()
       const controls = await reader.decodeFromStream(
         stream,
         video,
@@ -87,10 +95,7 @@ export function BarcodeScanner({
 
         const stream = mediaPromise
           ? await mediaPromise
-          : await navigator.mediaDevices.getUserMedia({
-              video: { facingMode: { ideal: "environment" } },
-              audio: false,
-            })
+          : await requestBarcodeCameraStream()
 
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop())

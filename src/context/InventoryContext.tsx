@@ -13,8 +13,12 @@ import {
 
 import { useAuth } from "@/context/AuthContext"
 import { UNMAPPED_VALUE } from "@/lib/import-fields"
-import { normalizeBarcode } from "@/lib/normalize-barcode"
 import { normalizeSifra } from "@/lib/normalize-sifra"
+import {
+  buildPopisProductLookup,
+  enrichPopisnaWithCatalog,
+  lookupPopisProduct,
+} from "@/lib/merge-popisna-catalog"
 import { createClient } from "@/lib/supabase/client"
 import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import type {
@@ -279,17 +283,26 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }, [supabase, orgId, refreshInventory])
 
-  const popisnaBySku = useMemo(
-    () => new Map(popisnaLines.map((line) => [line.sku, line])),
-    [popisnaLines],
+  const enrichedPopisnaLines = useMemo(
+    () => enrichPopisnaWithCatalog(popisnaLines, products),
+    [popisnaLines, products],
   )
+
+  const popisnaBySku = useMemo(() => {
+    const map = new Map<string, PopisnaLine>()
+    for (const line of enrichedPopisnaLines) {
+      map.set(line.sku, line)
+      map.set(normalizeSifra(line.sku), line)
+    }
+    return map
+  }, [enrichedPopisnaLines])
 
   const sifrarnikCount = products.length
   const popisnaLineCount = popisnaLines.length
 
   const totalExpectedItems = useMemo(
-    () => popisnaLines.reduce((sum, line) => sum + line.targetQty, 0),
-    [popisnaLines],
+    () => enrichedPopisnaLines.reduce((sum, line) => sum + line.targetQty, 0),
+    [enrichedPopisnaLines],
   )
 
   const totalCountedItems = useMemo(
@@ -307,8 +320,8 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   )
 
   const totalExpectedFinancialValue = useMemo(
-    () => popisnaLines.reduce((sum, line) => sum + line.price * line.targetQty, 0),
-    [popisnaLines],
+    () => enrichedPopisnaLines.reduce((sum, line) => sum + line.price * line.targetQty, 0),
+    [enrichedPopisnaLines],
   )
 
   const progress =
@@ -355,60 +368,21 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   )
 
   const getTargetQty = useCallback(
-    (sku: string) => popisnaBySku.get(sku)?.targetQty ?? 0,
+    (sku: string) =>
+      popisnaBySku.get(sku)?.targetQty ??
+      popisnaBySku.get(normalizeSifra(sku))?.targetQty ??
+      0,
     [popisnaBySku],
   )
 
-  const productLookup = useMemo(() => {
-    const bySku = new Map<string, Product>()
-    const byBarcode = new Map<string, Product>()
-
-    const register = (product: Product) => {
-      bySku.set(product.sku, product)
-      bySku.set(normalizeSifra(product.sku), product)
-      const bc = product.barcode.trim()
-      if (bc) {
-        byBarcode.set(bc, product)
-        byBarcode.set(normalizeBarcode(bc), product)
-      }
-    }
-
-    for (const line of popisnaLines) {
-      register({
-        sku: line.sku,
-        name: line.name,
-        barcode: line.barcode,
-        price: line.price,
-      })
-    }
-
-    for (const product of products) {
-      if (!bySku.has(product.sku)) {
-        register(product)
-      } else if (product.barcode.trim()) {
-        const bc = normalizeBarcode(product.barcode)
-        if (!byBarcode.has(bc)) {
-          register(product)
-        }
-      }
-    }
-
-    return { bySku, byBarcode }
-  }, [popisnaLines, products])
+  const productLookup = useMemo(
+    () => buildPopisProductLookup(popisnaLines, products),
+    [popisnaLines, products],
+  )
 
   const getProduct = useCallback(
-    (query: string) => {
-      const raw = query.trim()
-      if (!raw) return null
-
-      return (
-        productLookup.byBarcode.get(raw) ??
-        productLookup.byBarcode.get(normalizeBarcode(raw)) ??
-        productLookup.bySku.get(raw) ??
-        productLookup.bySku.get(normalizeSifra(raw)) ??
-        null
-      )
-    },
+    (query: string) =>
+      lookupPopisProduct(query, productLookup.bySku, productLookup.byBarcode),
     [productLookup],
   )
 
@@ -593,7 +567,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     () => ({
       session,
       products,
-      popisnaLines,
+      popisnaLines: enrichedPopisnaLines,
       counts,
       subscription,
       blind: session.blind,
@@ -618,7 +592,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [
       session,
       products,
-      popisnaLines,
+      enrichedPopisnaLines,
       counts,
       subscription,
       sifrarnikCount,

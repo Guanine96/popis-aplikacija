@@ -1,12 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser"
 import { toast } from "sonner"
 import {
   ArrowRight,
   Check,
   EyeOff,
+  Flashlight,
   Keyboard,
   LogOut,
   ScanBarcode,
@@ -19,6 +19,13 @@ import { NumericKeypad } from "@/components/count/numeric-keypad"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import {
+  requestBarcodeCameraStream,
+  setTorch,
+  startHighResBarcodeScan,
+  torchSupported,
+  waitForVideoReady,
+} from "@/lib/barcode-camera"
 
 export function PopisMobileView() {
   const { user, logout } = useAuth()
@@ -43,22 +50,27 @@ export function PopisMobileView() {
     "idle" | "starting" | "scanning" | "error"
   >("idle")
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [torchOn, setTorchOn] = useState(false)
+  const [torchAvailable, setTorchAvailable] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
-  const controlsRef = useRef<IScannerControls | null>(null)
+  const stopScanRef = useRef<(() => void) | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanningPausedRef = useRef(false)
 
   const qty = quantity === "" ? 0 : Number.parseInt(quantity, 10)
 
   const stopCamera = useCallback(() => {
-    controlsRef.current?.stop()
-    controlsRef.current = null
+    stopScanRef.current?.()
+    stopScanRef.current = null
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
     if (videoRef.current) {
       videoRef.current.srcObject = null
     }
+    setCameraActive(false)
+    setTorchOn(false)
+    setTorchAvailable(false)
     setCameraStatus("idle")
   }, [])
 
@@ -99,11 +111,7 @@ export function PopisMobileView() {
         throw new Error("Kamera nije podržana u ovom pregledaču.")
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
-        audio: false,
-      })
-
+      const stream = await requestBarcodeCameraStream()
       const video = videoRef.current
       if (!video) {
         stream.getTracks().forEach((track) => track.stop())
@@ -114,17 +122,19 @@ export function PopisMobileView() {
       video.srcObject = stream
       video.setAttribute("playsinline", "true")
       await video.play()
+      await waitForVideoReady(video)
 
-      const reader = new BrowserMultiFormatReader()
-      const controls = await reader.decodeFromStream(stream, video, (result) => {
-        if (result) handleScanResult(result.getText())
+      const track = stream.getVideoTracks()[0]
+      setTorchAvailable(torchSupported(track))
+
+      stopScanRef.current = startHighResBarcodeScan(video, (code) => {
+        handleScanResult(code)
       })
-      controlsRef.current = controls
+
       setCameraActive(true)
       setCameraStatus("scanning")
     } catch (error) {
       stopCamera()
-      setCameraActive(false)
       setCameraStatus("error")
       setManualMode(true)
       setCameraError(
@@ -134,6 +144,13 @@ export function PopisMobileView() {
       )
     }
   }, [cameraActive, product, handleScanResult, stopCamera])
+
+  const toggleTorch = useCallback(async () => {
+    const track = streamRef.current?.getVideoTracks()[0]
+    const next = !torchOn
+    const ok = await setTorch(track, next)
+    if (ok) setTorchOn(next)
+  }, [torchOn])
 
   useEffect(() => {
     return () => {
@@ -227,7 +244,7 @@ export function PopisMobileView() {
           ref={videoRef}
           className={cn(
             "absolute inset-0 size-full object-cover",
-            product || manualMode ? "opacity-0" : "opacity-100",
+            product || manualMode ? "pointer-events-none opacity-0" : "opacity-100",
           )}
           muted
           playsInline
@@ -235,9 +252,9 @@ export function PopisMobileView() {
         />
 
         {!product && !manualMode ? (
-          <div className="absolute inset-0 flex flex-col bg-black/40">
+          <div className="absolute inset-0 flex flex-col">
             <div className="pointer-events-none flex flex-1 items-center justify-center p-6">
-              <div className="relative h-40 w-72 max-w-[85%]">
+              <div className="relative h-36 w-80 max-w-[92%]">
                 {[
                   "left-0 top-0 border-l-2 border-t-2",
                   "right-0 top-0 border-r-2 border-t-2",
@@ -253,7 +270,24 @@ export function PopisMobileView() {
               </div>
             </div>
 
-            <div className="shrink-0 space-y-3 bg-gradient-to-t from-zinc-950 via-zinc-950/95 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6">
+            <div className="shrink-0 space-y-3 bg-gradient-to-t from-zinc-950 via-zinc-950/90 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4">
+              {cameraActive && torchAvailable ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => void toggleTorch()}
+                  className={cn(
+                    "h-11 w-full rounded-xl",
+                    torchOn
+                      ? "bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/40"
+                      : "text-zinc-300",
+                  )}
+                >
+                  <Flashlight data-icon="inline-start" />
+                  {torchOn ? "Blic uključen" : "Uključi blic"}
+                </Button>
+              ) : null}
+
               {!cameraActive ? (
                 <Button
                   onClick={() => void startCamera()}
@@ -266,7 +300,7 @@ export function PopisMobileView() {
                 <p className="text-center text-sm text-cyan-200/90">
                   {cameraStatus === "starting"
                     ? "Pokretanje kamere…"
-                    : "Usmeri kameru ka barkodu"}
+                    : "Drži barkod u okviru, 15–25 cm od kamere"}
                 </p>
               )}
 
