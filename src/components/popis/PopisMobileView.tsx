@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils"
 
 export function PopisMobileView() {
   const { user, logout } = useAuth()
-  const { session, blind, products, isLoading, getProduct, getCountForSku, confirmCount } =
+  const { session, blind, products, popisnaLineCount, isLoading, getProduct, getCountForSku, getTargetQty, confirmCount } =
     useInventory()
   const [query, setQuery] = useState("")
   const [product, setProduct] = useState<Product | null>(null)
@@ -148,9 +148,9 @@ export function PopisMobileView() {
                 {product.sku}
                 {product.barcode && ` · ${product.barcode}`}
               </p>
-              {!blind && (
+              {!blind && getTargetQty(product.sku) > 0 && (
                 <p className="mt-2 text-sm text-teal-400">
-                  Očekivano: {product.expectedQty} kom
+                  Očekivano (popisna): {getTargetQty(product.sku)} kom
                 </p>
               )}
               {getCountForSku(product.sku) > 0 && (
@@ -200,7 +200,8 @@ export function PopisMobileView() {
               Skenirajte barkod ili unesite šifru artikla
             </p>
             <p className="text-xs text-zinc-600">
-              {products.length.toLocaleString("sr-RS")} artikala u šifrarniku
+              Šifrarnik: {products.length.toLocaleString("sr-RS")} šifri · Popisna
+              lista: {popisnaLineCount.toLocaleString("sr-RS")} stavki
             </p>
             <p className="max-w-xs text-xs text-amber-400/80">
               Ako skeniranje ne pronađe artikal, ukucajte šifru (npr. 3, 4, 5) i

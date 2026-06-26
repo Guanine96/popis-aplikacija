@@ -12,11 +12,14 @@ import {
 
 import { useAuth } from "@/context/AuthContext"
 import { UNMAPPED_VALUE } from "@/lib/import-fields"
+import { normalizeSifra } from "@/lib/normalize-sifra"
 import { createClient } from "@/lib/supabase/client"
+import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import type {
   AppUser,
   CountEntry,
   InventorySession,
+  PopisnaLine,
   Product,
   Subscription,
 } from "@/lib/types"
@@ -35,9 +38,12 @@ interface PopisnaImportPayload {
 interface InventoryContextValue {
   session: InventorySession
   products: Product[]
+  popisnaLines: PopisnaLine[]
   counts: CountEntry[]
   subscription: Subscription
   blind: boolean
+  sifrarnikCount: number
+  popisnaLineCount: number
   totalExpectedItems: number
   totalCountedItems: number
   totalFinancialValue: number
@@ -52,6 +58,7 @@ interface InventoryContextValue {
   setBlind: (blind: boolean) => Promise<void>
   confirmCount: (sku: string, quantity: number) => Promise<void>
   getCountForSku: (sku: string) => number
+  getTargetQty: (sku: string) => number
   getProduct: (query: string) => Product | null
   applyImport: (payload: ImportPayload) => Promise<number>
   applyPopisnaImport: (
@@ -97,6 +104,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     renewsOn: "",
   })
   const [products, setProducts] = useState<Product[]>([])
+  const [popisnaLines, setPopisnaLines] = useState<PopisnaLine[]>([])
   const [counts, setCounts] = useState<CountEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
@@ -141,43 +149,77 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .maybeSingle()
 
     if (activeVersion) {
-      const { data: items } = await supabase
-        .from("sifrarnik_items")
-        .select("*")
-        .eq("sifrarnik_version_id", activeVersion.id)
-        .order("sifra")
+      const items = await fetchAllPages((from, to) =>
+        supabase
+          .from("sifrarnik_items")
+          .select("sifra, naziv, bar_kod, cena")
+          .eq("sifrarnik_version_id", activeVersion.id)
+          .order("sifra")
+          .range(from, to),
+      )
 
-      if (items) {
-        setProducts(
-          items.map((p) => ({
-            sku: p.sifra,
-            barcode: p.bar_kod ?? "",
-            name: p.naziv,
-            expectedQty: Number(p.kolicina_na_zal ?? 0),
-            price: Number(p.cena ?? 0),
-          })),
-        )
-      }
+      setProducts(
+        items.map((p) => ({
+          sku: p.sifra,
+          barcode: p.bar_kod ?? "",
+          name: p.naziv,
+          price: Number(p.cena ?? 0),
+        })),
+      )
     } else {
       setProducts([])
     }
 
-    const { data: events } = await supabase
-      .from("count_events")
-      .select("*")
+    const { data: activePopis } = await supabase
+      .from("popis")
+      .select("id")
       .eq("company_id", orgId)
-      .order("confirmed_at")
+      .eq("status", "ACTIVE")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    if (events) {
-      setCounts(
-        events.map((c) => ({
-          sku: c.sifra,
-          counterId: c.profile_id,
-          quantity: c.quantity,
-          confirmedAt: c.confirmed_at,
+    if (activePopis) {
+      const lines = await fetchAllPages((from, to) =>
+        supabase
+          .from("popis_items")
+          .select("sifra, naziv, ciljana_kolicina, popisano, cena")
+          .eq("company_id", orgId)
+          .eq("popis_id", activePopis.id)
+          .order("sifra")
+          .range(from, to),
+      )
+
+      setPopisnaLines(
+        lines.map((line) => ({
+          sku: line.sifra,
+          name: line.naziv,
+          targetQty: Number(line.ciljana_kolicina ?? 0),
+          countedQty: Number(line.popisano ?? 0),
+          price: Number(line.cena ?? 0),
         })),
       )
+    } else {
+      setPopisnaLines([])
     }
+
+    const events = await fetchAllPages((from, to) =>
+      supabase
+        .from("count_events")
+        .select("sifra, profile_id, quantity, confirmed_at")
+        .eq("company_id", orgId)
+        .order("confirmed_at")
+        .range(from, to),
+    )
+
+    setCounts(
+      events.map((c) => ({
+        sku: c.sifra,
+        counterId: c.profile_id,
+        quantity: c.quantity,
+        confirmedAt: c.confirmed_at,
+      })),
+    )
 
     setIsLoading(false)
   }, [orgId, supabase])
@@ -194,6 +236,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "count_events", filter: `company_id=eq.${orgId}` },
+        () => loadInventory(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "popis_items", filter: `company_id=eq.${orgId}` },
         () => loadInventory(),
       )
       .on(
@@ -218,9 +265,17 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }, [supabase, orgId, loadInventory])
 
+  const popisnaBySku = useMemo(
+    () => new Map(popisnaLines.map((line) => [line.sku, line])),
+    [popisnaLines],
+  )
+
+  const sifrarnikCount = products.length
+  const popisnaLineCount = popisnaLines.length
+
   const totalExpectedItems = useMemo(
-    () => products.reduce((sum, p) => sum + p.expectedQty, 0),
-    [products],
+    () => popisnaLines.reduce((sum, line) => sum + line.targetQty, 0),
+    [popisnaLines],
   )
 
   const totalCountedItems = useMemo(
@@ -276,15 +331,23 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [counts],
   )
 
+  const getTargetQty = useCallback(
+    (sku: string) => popisnaBySku.get(sku)?.targetQty ?? 0,
+    [popisnaBySku],
+  )
+
   const getProduct = useCallback(
     (query: string) => {
-      const q = query.trim().toLowerCase()
-      if (!q) return null
+      const raw = query.trim()
+      if (!raw) return null
+      const q = raw.toLowerCase()
+      const norm = normalizeSifra(raw)
 
       const exact = products.find(
         (p) =>
           p.barcode.toLowerCase() === q ||
-          p.sku.toLowerCase() === q,
+          p.sku.toLowerCase() === q ||
+          normalizeSifra(p.sku) === norm,
       )
       if (exact) return exact
 
@@ -293,7 +356,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       return (
         products.find(
           (p) =>
-            p.sku.toLowerCase() === q ||
+            normalizeSifra(p.sku) === norm ||
             p.name.toLowerCase().includes(q) ||
             (p.barcode && p.barcode.toLowerCase().includes(q)),
         ) ?? null
@@ -352,7 +415,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           if (!sku || !name) return null
 
           const barcodeCol = mapping.barcode
-          const qtyCol = mapping.expectedQty
 
           return {
             sifra: sku,
@@ -361,10 +423,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
               barcodeCol && barcodeCol !== UNMAPPED_VALUE
                 ? row[barcodeCol]?.trim() || ""
                 : "",
-            kolicina_na_zal:
-              qtyCol && qtyCol !== UNMAPPED_VALUE
-                ? parseNumber(row[qtyCol] || "0")
-                : 0,
+            kolicina_na_zal: 0,
             cena: parseNumber(row[priceCol] || "0"),
           }
         })
@@ -420,20 +479,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       })
 
       await supabase.from("popis_items").delete().eq("company_id", orgId)
-      if (imported.length > 0) {
-        await supabase.from("popis_items").insert(
-          imported.map((p) => ({
-            popis_id: popisId,
-            company_id: orgId,
-            sifra: p.sifra,
-            naziv: p.naziv,
-            bar_kod: p.bar_kod,
-            ciljana_kolicina: Math.round(p.kolicina_na_zal),
-            popisano: 0,
-            cena: p.cena,
-          })),
-        )
-      }
 
       await supabase
         .from("companies")
@@ -455,62 +500,27 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       if (!skuCol || skuCol === UNMAPPED_VALUE) throw new Error("Mapirajte šifru")
       if (!qtyCol || qtyCol === UNMAPPED_VALUE) throw new Error("Mapirajte količinu")
 
-      const { data: activeVersion } = await supabase
-        .from("sifrarnik_versions")
-        .select("id")
-        .eq("company_id", orgId)
-        .eq("is_active", true)
-        .maybeSingle()
+      const payload = rows
+        .map((row) => {
+          const sifra = row[skuCol]?.trim()
+          if (!sifra) return null
+          return { sifra, qty: parseNumber(row[qtyCol] || "0") }
+        })
+        .filter((row): row is { sifra: string; qty: number } => row !== null)
 
-      if (!activeVersion) throw new Error("Prvo uvezite šifrarnik")
+      const { data, error } = await supabase.rpc("import_popisna_lista", {
+        p_company_id: orgId,
+        p_rows: payload,
+      })
 
-      const { data: existingItems } = await supabase
-        .from("sifrarnik_items")
-        .select("id, sifra")
-        .eq("sifrarnik_version_id", activeVersion.id)
+      if (error) throw error
 
-      const itemIdBySifra = new Map(
-        (existingItems ?? []).map((item) => [item.sifra.trim(), item.id]),
-      )
-
-      const updates: Array<{ sifra: string; qty: number }> = []
-      let missing = 0
-
-      for (const row of rows) {
-        const sifra = row[skuCol]?.trim()
-        if (!sifra) continue
-        const qty = parseNumber(row[qtyCol] || "0")
-        if (!itemIdBySifra.has(sifra)) {
-          missing += 1
-          continue
-        }
-        updates.push({ sifra, qty })
-      }
-
-      const chunkSize = 80
-      for (let i = 0; i < updates.length; i += chunkSize) {
-        const chunk = updates.slice(i, i + chunkSize)
-        await Promise.all(
-          chunk.map(({ sifra, qty }) =>
-            supabase
-              .from("sifrarnik_items")
-              .update({ kolicina_na_zal: qty })
-              .eq("id", itemIdBySifra.get(sifra)!),
-          ),
-        )
-        await Promise.all(
-          chunk.map(({ sifra, qty }) =>
-            supabase
-              .from("popis_items")
-              .update({ ciljana_kolicina: Math.round(qty) })
-              .eq("company_id", orgId)
-              .eq("sifra", sifra),
-          ),
-        )
-      }
-
+      const result = data as { updated: number; missing: number }
       await loadInventory()
-      return { updated: updates.length, missing }
+      return {
+        updated: Number(result.updated ?? 0),
+        missing: Number(result.missing ?? 0),
+      }
     },
     [orgId, supabase, loadInventory],
   )
@@ -519,9 +529,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     () => ({
       session,
       products,
+      popisnaLines,
       counts,
       subscription,
       blind: session.blind,
+      sifrarnikCount,
+      popisnaLineCount,
       totalExpectedItems,
       totalCountedItems,
       totalFinancialValue,
@@ -531,6 +544,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       setBlind,
       confirmCount,
       getCountForSku,
+      getTargetQty,
       getProduct,
       applyImport,
       applyPopisnaImport,
@@ -538,8 +552,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [
       session,
       products,
+      popisnaLines,
       counts,
       subscription,
+      sifrarnikCount,
+      popisnaLineCount,
       totalExpectedItems,
       totalCountedItems,
       totalFinancialValue,
@@ -549,6 +566,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       setBlind,
       confirmCount,
       getCountForSku,
+      getTargetQty,
       getProduct,
       applyImport,
       applyPopisnaImport,

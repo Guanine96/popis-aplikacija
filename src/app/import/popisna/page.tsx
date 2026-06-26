@@ -100,14 +100,15 @@ function PopisnaImportContent() {
           <div>
             <h1 className="text-xl font-bold text-zinc-100">Uvoz popisne liste</h1>
             <p className="text-sm text-zinc-500">
-              Knjigovodstvene količine za postojeći šifrarnik ({products.length.toLocaleString("sr-RS")} šifri)
+              Poseban dokument za ovaj popis — šifra + količina. Šifrarnik (
+              {products.length.toLocaleString("sr-RS")} šifri) ostaje nepromenjen.
             </p>
           </div>
         </div>
-        <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-sm text-amber-200/90">
-          Prvo uvezite <Link href="/import" className="underline">šifrarnik</Link> (šifra,
-          naziv, cena). Zatim ovde uvezite popisnu listu sa kolonama šifra + količina.
-          Ne briše već popisane stavke.
+        <p className="rounded-lg border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-sm text-teal-100/90">
+          Popisna lista je <strong>odvojena</strong> od šifrarnika. Uvoz zamenjuje
+          stavke popisa za ovu sesiju i povezuje ih sa šifrarnikom po šifri (ili
+          barkodu / kataloškom broju).
         </p>
         <WizardStepper steps={STEPS} currentStep={currentStep} />
       </div>

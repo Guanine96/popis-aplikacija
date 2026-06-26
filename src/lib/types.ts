@@ -16,7 +16,14 @@ export interface Product {
   sku: string
   barcode: string
   name: string
-  expectedQty: number
+  price: number
+}
+
+export interface PopisnaLine {
+  sku: string
+  name: string
+  targetQty: number
+  countedQty: number
   price: number
 }
 
