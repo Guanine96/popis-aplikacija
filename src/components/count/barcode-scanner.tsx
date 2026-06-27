@@ -5,9 +5,9 @@ import { type IScannerControls } from "@zxing/browser"
 import { AlertCircle, Keyboard, ScanLine } from "lucide-react"
 
 import {
+  attachStreamToVideo,
   createBarcodeReader,
   requestBarcodeCameraStream,
-  waitForVideoReady,
 } from "@/lib/barcode-camera"
 
 import {
@@ -50,6 +50,7 @@ export function BarcodeScanner({
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
     if (videoRef.current) {
+      videoRef.current.pause()
       videoRef.current.srcObject = null
     }
   }, [])
@@ -60,11 +61,7 @@ export function BarcodeScanner({
       if (!video) return
 
       streamRef.current = stream
-      video.srcObject = stream
-      video.setAttribute("playsinline", "true")
-      await video.play()
-
-      await waitForVideoReady(video)
+      await attachStreamToVideo(video, stream)
 
       const reader = createBarcodeReader()
       const controls = await reader.decodeFromStream(
@@ -194,7 +191,6 @@ export function BarcodeScanner({
               className="size-full object-cover"
               muted
               playsInline
-              autoPlay
             />
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="relative h-1/2 w-3/4">

@@ -49,9 +49,7 @@ export async function requestBarcodeCameraStream(): Promise<MediaStream> {
   let lastError: unknown
   for (const video of variants) {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video })
-      await optimizeBarcodeVideoTrack(stream.getVideoTracks()[0])
-      return stream
+      return await navigator.mediaDevices.getUserMedia({ audio: false, video })
     } catch (error) {
       lastError = error
     }
@@ -60,6 +58,44 @@ export async function requestBarcodeCameraStream(): Promise<MediaStream> {
   throw lastError instanceof Error
     ? lastError
     : new Error("Kamera nije dostupna.")
+}
+
+function isPlayInterrupted(error: unknown) {
+  if (!(error instanceof DOMException)) return false
+  if (error.name === "AbortError") return true
+  return error.message.toLowerCase().includes("interrupted")
+}
+
+/** Bezbedno poveži stream — izbegava play() prekinut novim load-om. */
+export async function attachStreamToVideo(
+  video: HTMLVideoElement,
+  stream: MediaStream,
+) {
+  video.muted = true
+  video.playsInline = true
+  video.setAttribute("playsinline", "true")
+  video.setAttribute("webkit-playsinline", "true")
+  video.autoplay = false
+
+  if (video.srcObject !== stream) {
+    video.pause()
+    video.srcObject = stream
+  }
+
+  const tryPlay = async () => {
+    await video.play()
+  }
+
+  try {
+    await tryPlay()
+  } catch (error) {
+    if (!isPlayInterrupted(error)) throw error
+    await waitForVideoReady(video)
+    await tryPlay()
+  }
+
+  await waitForVideoReady(video)
+  await optimizeBarcodeVideoTrack(stream.getVideoTracks()[0])
 }
 
 export async function optimizeBarcodeVideoTrack(track?: MediaStreamTrack) {
@@ -75,15 +111,6 @@ export async function optimizeBarcodeVideoTrack(track?: MediaStreamTrack) {
     }
   } catch {
     // focus not supported on this device
-  }
-
-  try {
-    await track.applyConstraints({
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-    })
-  } catch {
-    // keep negotiated resolution
   }
 }
 

@@ -20,11 +20,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import {
+  attachStreamToVideo,
   requestBarcodeCameraStream,
   setTorch,
   startHighResBarcodeScan,
   torchSupported,
-  waitForVideoReady,
 } from "@/lib/barcode-camera"
 
 export function PopisMobileView() {
@@ -57,16 +57,22 @@ export function PopisMobileView() {
   const stopScanRef = useRef<(() => void) | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scanningPausedRef = useRef(false)
+  const startingCameraRef = useRef(false)
+  const cameraSessionRef = useRef(0)
 
   const qty = quantity === "" ? 0 : Number.parseInt(quantity, 10)
 
   const stopCamera = useCallback(() => {
+    cameraSessionRef.current += 1
+    startingCameraRef.current = false
     stopScanRef.current?.()
     stopScanRef.current = null
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
+    const video = videoRef.current
+    if (video) {
+      video.pause()
+      video.srcObject = null
     }
     setCameraActive(false)
     setTorchOn(false)
@@ -101,7 +107,11 @@ export function PopisMobileView() {
   )
 
   const startCamera = useCallback(async () => {
-    if (cameraActive || product) return
+    if (startingCameraRef.current || product) return
+    if (cameraActive && streamRef.current) return
+
+    startingCameraRef.current = true
+    const session = ++cameraSessionRef.current
 
     setCameraError(null)
     setCameraStatus("starting")
@@ -112,6 +122,11 @@ export function PopisMobileView() {
       }
 
       const stream = await requestBarcodeCameraStream()
+      if (session !== cameraSessionRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
+
       const video = videoRef.current
       if (!video) {
         stream.getTracks().forEach((track) => track.stop())
@@ -119,10 +134,9 @@ export function PopisMobileView() {
       }
 
       streamRef.current = stream
-      video.srcObject = stream
-      video.setAttribute("playsinline", "true")
-      await video.play()
-      await waitForVideoReady(video)
+      await attachStreamToVideo(video, stream)
+
+      if (session !== cameraSessionRef.current) return
 
       const track = stream.getVideoTracks()[0]
       setTorchAvailable(torchSupported(track))
@@ -134,6 +148,7 @@ export function PopisMobileView() {
       setCameraActive(true)
       setCameraStatus("scanning")
     } catch (error) {
+      if (session !== cameraSessionRef.current) return
       stopCamera()
       setCameraStatus("error")
       setManualMode(true)
@@ -142,6 +157,8 @@ export function PopisMobileView() {
           ? error.message
           : "Dozvolite pristup kameri u podešavanjima pregledača.",
       )
+    } finally {
+      startingCameraRef.current = false
     }
   }, [cameraActive, product, handleScanResult, stopCamera])
 
@@ -248,7 +265,6 @@ export function PopisMobileView() {
           )}
           muted
           playsInline
-          autoPlay
         />
 
         {!product && !manualMode ? (
