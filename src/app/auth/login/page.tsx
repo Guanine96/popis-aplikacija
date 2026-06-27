@@ -2,9 +2,10 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { Boxes, Eye, EyeOff, Loader2 } from "lucide-react"
+import { Eye, EyeOff, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
+import { AppLogo } from "@/components/AppLogo"
 import { CyberCard } from "@/components/CyberCard"
 import { useAuth } from "@/context/AuthContext"
 import { Button } from "@/components/ui/button"
@@ -43,9 +44,7 @@ export default function LoginPage() {
 
       <CyberCard className="relative z-10 w-full max-w-md p-8" glow="cyan">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <span className="flex size-14 items-center justify-center rounded-2xl bg-cyan-500/15 text-cyan-400 ring-1 ring-cyan-500/40 shadow-[0_0_30px_rgba(0,240,255,0.1)]">
-            <Boxes className="size-7" />
-          </span>
+          <AppLogo size="xl" priority />
           <h1 className="text-2xl font-bold tracking-tight text-zinc-50">
             Popis Robe
           </h1>

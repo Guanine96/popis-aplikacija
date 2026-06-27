@@ -50,6 +50,7 @@ const FILTER_OPTIONS: { value: ReconciliationFilter; label: string }[] = [
   { value: "differences", label: "Prikaži samo razlike" },
   { value: "surplus", label: "Samo viškovi" },
   { value: "shortage", label: "Samo manjkovi" },
+  { value: "uncounted", label: "Nije popisano" },
 ]
 
 const PAGE_SIZES = [25, 50, 100] as const
@@ -58,6 +59,7 @@ const STATUS_LABEL = {
   usklađeno: "Usklađeno",
   višak: "Višak",
   manjak: "Manjak",
+  "nije popisano": "Nije popisano",
 } as const
 
 function SortButton({
@@ -100,6 +102,8 @@ function StatusBadge({ status }: { status: ReconciliationRow["status"] }) {
           "border-cyan-400/50 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(0,240,255,0.15)]",
         status === "manjak" &&
           "border-rose-500/50 bg-rose-500/15 text-rose-300 shadow-[0_0_12px_rgba(244,63,94,0.15)]",
+        status === "nije popisano" &&
+          "border-amber-500/40 bg-amber-500/10 text-amber-200",
       )}
     >
       {STATUS_LABEL[status]}
@@ -110,10 +114,12 @@ function StatusBadge({ status }: { status: ReconciliationRow["status"] }) {
 function rowTone(status: ReconciliationRow["status"]) {
   if (status === "višak") return "bg-cyan-500/[0.04] hover:bg-cyan-500/[0.08]"
   if (status === "manjak") return "bg-rose-500/[0.06] hover:bg-rose-500/[0.1]"
+  if (status === "nije popisano") return "bg-amber-500/[0.04] hover:bg-amber-500/[0.08]"
   return "hover:bg-zinc-900/60"
 }
 
-function diffTone(diff: number) {
+function diffTone(status: ReconciliationRow["status"], diff: number) {
+  if (status === "nije popisano") return "font-mono text-amber-300/80"
   if (diff > 0) return "font-mono font-semibold text-cyan-300"
   if (diff < 0) return "font-mono font-semibold text-rose-300"
   return "font-mono text-zinc-400"
@@ -239,15 +245,15 @@ export function PopisReconciliationTable() {
           </p>
         </CyberCard>
         <CyberCard className="p-4" glow="red">
-          <p className="text-xs uppercase tracking-wider text-rose-400/70">Manjkovi</p>
-          <p className="mt-1 font-mono text-2xl font-bold text-rose-300">
-            {formatNumber(summary.shortage)}
+          <p className="text-xs uppercase tracking-wider text-amber-400/70">Nije popisano</p>
+          <p className="mt-1 font-mono text-2xl font-bold text-amber-300">
+            {formatNumber(summary.uncounted)}
           </p>
         </CyberCard>
         <CyberCard className="p-4" glow="cyan">
-          <p className="text-xs uppercase tracking-wider text-zinc-500">Ukupno</p>
+          <p className="text-xs uppercase tracking-wider text-zinc-500">Ukupno za popisati</p>
           <p className="mt-1 font-mono text-2xl font-bold text-zinc-200">
-            {formatNumber(summary.total)}
+            {formatNumber(summary.toCountTotal)}
           </p>
         </CyberCard>
       </div>
@@ -382,8 +388,12 @@ export function PopisReconciliationTable() {
                     <TableCell className="text-right font-mono tabular-nums text-zinc-300">
                       {formatNumber(row.countedQty)}
                     </TableCell>
-                    <TableCell className={cn("text-right tabular-nums", diffTone(row.difference))}>
-                      {row.difference > 0 ? `+${formatNumber(row.difference)}` : formatNumber(row.difference)}
+                    <TableCell className={cn("text-right tabular-nums", diffTone(row.status, row.difference))}>
+                      {row.status === "nije popisano"
+                        ? "—"
+                        : row.difference > 0
+                          ? `+${formatNumber(row.difference)}`
+                          : formatNumber(row.difference)}
                     </TableCell>
                     <TableCell>
                       <StatusBadge status={row.status} />

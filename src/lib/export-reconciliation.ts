@@ -6,6 +6,7 @@ const STATUS_LABEL: Record<ReconciliationRow["status"], string> = {
   usklađeno: "Usklađeno",
   višak: "Višak",
   manjak: "Manjak",
+  "nije popisano": "Nije popisano",
 }
 
 export function exportReconciliationToExcel(

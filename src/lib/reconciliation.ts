@@ -1,12 +1,17 @@
 import type { CountEntry, PopisnaLine } from "@/lib/types"
 
-export type ReconciliationStatus = "usklađeno" | "višak" | "manjak"
+export type ReconciliationStatus =
+  | "usklađeno"
+  | "višak"
+  | "manjak"
+  | "nije popisano"
 
 export type ReconciliationFilter =
   | "all"
   | "differences"
   | "surplus"
   | "shortage"
+  | "uncounted"
 
 export type ReconciliationSortKey =
   | "barcode"
@@ -36,7 +41,19 @@ export function buildCountedBySku(counts: CountEntry[]): Map<string, number> {
   return map
 }
 
-export function getReconciliationStatus(difference: number): ReconciliationStatus {
+export function isIgnoredReconciliationRow(bookQty: number, countedQty: number): boolean {
+  return bookQty === 0 && countedQty === 0
+}
+
+export function getReconciliationStatus(
+  bookQty: number,
+  countedQty: number,
+): ReconciliationStatus {
+  if (isIgnoredReconciliationRow(bookQty, countedQty)) {
+    return "usklađeno"
+  }
+  if (countedQty === 0 && bookQty > 0) return "nije popisano"
+  const difference = countedQty - bookQty
   if (difference > 0) return "višak"
   if (difference < 0) return "manjak"
   return "usklađeno"
@@ -48,23 +65,26 @@ export function buildReconciliationRows(
 ): ReconciliationRow[] {
   const countedBySku = buildCountedBySku(counts)
 
-  return lines.map((line) => {
-    const countedQty = countedBySku.get(line.sku) ?? line.countedQty ?? 0
-    const difference = countedQty - line.targetQty
-    const status = getReconciliationStatus(difference)
+  return lines
+    .map((line) => {
+      const bookQty = line.targetQty
+      const countedQty = countedBySku.get(line.sku) ?? line.countedQty ?? 0
+      const difference = countedQty - bookQty
+      const status = getReconciliationStatus(bookQty, countedQty)
 
-    return {
-      sku: line.sku,
-      barcode: line.barcode,
-      name: line.name,
-      bookQty: line.targetQty,
-      countedQty,
-      difference,
-      status,
-      unitPrice: line.price,
-      valueDelta: difference * line.price,
-    }
-  })
+      return {
+        sku: line.sku,
+        barcode: line.barcode,
+        name: line.name,
+        bookQty,
+        countedQty,
+        difference,
+        status,
+        unitPrice: line.price,
+        valueDelta: difference * line.price,
+      }
+    })
+    .filter((row) => !isIgnoredReconciliationRow(row.bookQty, row.countedQty))
 }
 
 export function filterReconciliationRows(
@@ -75,9 +95,10 @@ export function filterReconciliationRows(
   const q = search.trim().toLowerCase()
 
   return rows.filter((row) => {
-    if (filter === "differences" && row.difference === 0) return false
-    if (filter === "surplus" && row.difference <= 0) return false
-    if (filter === "shortage" && row.difference >= 0) return false
+    if (filter === "differences" && row.status === "usklađeno") return false
+    if (filter === "surplus" && row.status !== "višak") return false
+    if (filter === "shortage" && row.status !== "manjak") return false
+    if (filter === "uncounted" && row.status !== "nije popisano") return false
 
     if (!q) return true
     return (
@@ -89,9 +110,10 @@ export function filterReconciliationRows(
 }
 
 const STATUS_ORDER: Record<ReconciliationStatus, number> = {
-  manjak: 0,
-  usklađeno: 1,
-  višak: 2,
+  "nije popisano": 0,
+  manjak: 1,
+  usklađeno: 2,
+  višak: 3,
 }
 
 export function sortReconciliationRows(
@@ -142,12 +164,13 @@ export function paginateRows<T>(rows: T[], page: number, pageSize: number) {
 export function reconciliationSummary(rows: ReconciliationRow[]) {
   return rows.reduce(
     (acc, row) => {
-      acc.total += 1
       if (row.status === "usklađeno") acc.matched += 1
       if (row.status === "višak") acc.surplus += 1
       if (row.status === "manjak") acc.shortage += 1
+      if (row.status === "nije popisano") acc.uncounted += 1
+      if (row.bookQty > 0) acc.toCountTotal += 1
       return acc
     },
-    { total: 0, matched: 0, surplus: 0, shortage: 0 },
+    { matched: 0, surplus: 0, shortage: 0, uncounted: 0, toCountTotal: 0 },
   )
 }
