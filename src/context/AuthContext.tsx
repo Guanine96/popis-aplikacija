@@ -31,6 +31,8 @@ interface AuthContextValue {
   refreshUsers: () => Promise<void>
   seatsUsed: number
   seatsTotal: number
+  maxLicenses: number
+  subscriptionActive: boolean
   atSeatLimit: boolean
 }
 
@@ -43,20 +45,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [users, setUsers] = useState<AppUser[]>([])
   const [orgId, setOrgId] = useState<string | null>(null)
   const [seatsTotal, setSeatsTotal] = useState(5)
+  const [maxLicenses, setMaxLicenses] = useState(5)
+  const [subscriptionActive, setSubscriptionActive] = useState(true)
   const [isLoading, setIsLoading] = useState(true)
 
   const seatsUsed = users.length
-  const atSeatLimit = seatsUsed >= seatsTotal
+  const licenseLimit = maxLicenses || seatsTotal
+  const atSeatLimit = seatsUsed >= licenseLimit
 
   const loadOrgUsers = useCallback(
     async (companyId: string) => {
       const { data: company } = await supabase
         .from("companies")
-        .select("seats_total")
+        .select("seats_total, max_licenses, subscription_active")
         .eq("id", companyId)
         .single()
 
-      if (company) setSeatsTotal(company.seats_total)
+      if (company) {
+        setSeatsTotal(company.seats_total)
+        setMaxLicenses(company.max_licenses ?? company.seats_total)
+        setSubscriptionActive(company.subscription_active ?? true)
+      }
 
       const { data: profiles } = await supabase
         .from("profiles")
@@ -155,6 +164,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!profile) return false
 
+      const { data: company } = await supabase
+        .from("companies")
+        .select("subscription_active, max_licenses, seats_total")
+        .eq("id", profile.company_id)
+        .single()
+
+      if (company && company.subscription_active === false) {
+        await supabase.auth.signOut()
+        return false
+      }
+
       await supabase
         .from("profiles")
         .update({ is_online: true })
@@ -212,6 +232,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshUsers,
       seatsUsed,
       seatsTotal,
+      maxLicenses,
+      subscriptionActive,
       atSeatLimit,
     }),
     [
@@ -225,6 +247,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshUsers,
       seatsUsed,
       seatsTotal,
+      maxLicenses,
+      subscriptionActive,
       atSeatLimit,
     ],
   )

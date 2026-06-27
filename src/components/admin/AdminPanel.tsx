@@ -45,6 +45,8 @@ export function AdminPanel() {
     createCounter,
     seatsUsed,
     seatsTotal,
+    maxLicenses,
+    subscriptionActive,
     atSeatLimit,
   } = useAuth()
   const { subscription } = useInventory()
@@ -55,7 +57,8 @@ export function AdminPanel() {
   const [open, setOpen] = useState(false)
 
   const counters = users.filter((u) => u.role === "popisivac")
-  const seatProgress = (seatsUsed / seatsTotal) * 100
+  const licenseLimit = maxLicenses || seatsTotal
+  const seatProgress = licenseLimit > 0 ? (seatsUsed / licenseLimit) * 100 : 100
 
   async function handleCreate() {
     if (!username || !password || !displayName) {
@@ -167,7 +170,7 @@ export function AdminPanel() {
           <Lock className="size-4 text-red-400" />
           <AlertTitle className="text-red-300">Limit mesta dostignut</AlertTitle>
           <AlertDescription className="text-red-200/80">
-            Iskoristili ste svih {seatsTotal} mesta. Kupite dodatne licence da
+            Iskoristili ste svih {licenseLimit} licenci. Kupite dodatne licence da
             biste kreirali nove naloge.
             <Button
               variant="outline"
@@ -194,14 +197,23 @@ export function AdminPanel() {
           </div>
           <div className="mt-4 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-zinc-100">
-              {subscription.plan}
+              {subscription.planType || subscription.plan}
             </span>
-            <Badge className="border-teal-500/40 bg-teal-500/10 text-teal-300">
-              {subscription.status}
+            <Badge
+              className={
+                subscriptionActive && subscription.subscriptionActive
+                  ? "border-teal-500/40 bg-teal-500/10 text-teal-300"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-300"
+              }
+            >
+              {subscriptionActive && subscription.subscriptionActive
+                ? subscription.status
+                : "Neaktivna"}
             </Badge>
           </div>
           <p className="mt-2 text-sm text-zinc-500">
-            Obnova: {formatDate(subscription.renewsOn)}
+            Max licenci: {subscription.maxLicenses || licenseLimit} · Obnova:{" "}
+            {subscription.renewsOn ? formatDate(subscription.renewsOn) : "—"}
           </p>
         </CyberCard>
 
@@ -212,12 +224,12 @@ export function AdminPanel() {
               Iskorišćenost mesta
             </div>
             <span className="font-mono text-lg font-bold text-cyan-300">
-              {seatsUsed}/{seatsTotal}
+              {seatsUsed}/{licenseLimit}
             </span>
           </div>
           <Progress value={seatProgress} className="mt-4 h-3 bg-zinc-800" />
           <p className="mt-2 text-xs text-zinc-500">
-            {seatsTotal - seatsUsed} slobodnih mesta za nove popisivače
+            {Math.max(0, licenseLimit - seatsUsed)} slobodnih licenci za nove popisivače
           </p>
         </CyberCard>
       </div>

@@ -44,12 +44,21 @@ export async function POST(request: Request) {
 
     const { data: company } = await supabase
       .from("companies")
-      .select("seats_total")
+      .select("seats_total, max_licenses, subscription_active")
       .eq("id", orgId)
       .single()
 
-    if (company && count !== null && count >= company.seats_total) {
-      return NextResponse.json({ error: "Limit mesta dostignut" }, { status: 409 })
+    if (company?.subscription_active === false) {
+      return NextResponse.json({ error: "Pretplata nije aktivna" }, { status: 403 })
+    }
+
+    const licenseLimit = company?.max_licenses ?? company?.seats_total ?? 0
+
+    if (company && count !== null && count >= licenseLimit) {
+      return NextResponse.json(
+        { error: "Limit licenci dostignut — nadogradite paket" },
+        { status: 409 },
+      )
     }
 
     const admin = createAdminClient()

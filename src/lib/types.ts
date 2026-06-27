@@ -35,6 +35,18 @@ export interface CountEntry {
   confirmedAt: string
 }
 
+export type PopisStatus = "ACTIVE" | "CLOSED" | "EXPIRED"
+
+export interface PopisRecord {
+  id: string
+  name: string
+  teamLabel: string
+  status: PopisStatus
+  createdAt: string
+  expiresAt: string
+  closedAt: string | null
+}
+
 export interface InventorySession {
   id: string
   name: string
@@ -45,8 +57,11 @@ export interface InventorySession {
 
 export interface Subscription {
   plan: string
+  planType: string
   status: "aktivna" | "probni" | "istekla"
   seatsTotal: number
+  maxLicenses: number
+  subscriptionActive: boolean
   renewsOn: string
 }
 

@@ -2,7 +2,9 @@ import {
   ClipboardList,
   FileSpreadsheet,
   LayoutDashboard,
+  ListChecks,
   Shield,
+  Table2,
   Upload,
   type LucideIcon,
 } from "lucide-react"
@@ -21,6 +23,20 @@ export const ADMIN_NAV: NavItem[] = [
     label: "Dashboard",
     short: "Pregled",
     icon: LayoutDashboard,
+    adminOnly: true,
+  },
+  {
+    href: "/dashboard/reconciliation",
+    label: "Tabela popisa",
+    short: "Tabela",
+    icon: Table2,
+    adminOnly: true,
+  },
+  {
+    href: "/admin/popisi",
+    label: "Popisi i ekipe",
+    short: "Popisi",
+    icon: ListChecks,
     adminOnly: true,
   },
   {

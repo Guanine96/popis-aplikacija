@@ -44,6 +44,7 @@ const CHART_COLORS = ["#00f0ff", "#14b8a6", "#22d3ee", "#2dd4bf", "#06b6d4"]
 export function LiveDashboard() {
   const {
     session,
+    activePopis,
     sifrarnikCount,
     popisnaLineCount,
     progress,
@@ -61,7 +62,9 @@ export function LiveDashboard() {
     return () => window.clearInterval(poll)
   }, [refreshInventory])
 
-  const needsPopisnaImport = sifrarnikCount > 0 && popisnaLineCount === 0
+  const needsActivePopis = !activePopis
+  const needsPopisnaImport =
+    Boolean(activePopis) && sifrarnikCount > 0 && popisnaLineCount === 0
 
   const pieData = useMemo(
     () => [
@@ -95,13 +98,38 @@ export function LiveDashboard() {
         </h1>
         <p className="text-sm text-zinc-400">
           {session.name} · {session.location}
+          {activePopis ? (
+            <Badge className="ml-2 border-cyan-500/40 bg-cyan-500/10 text-cyan-300">
+              {activePopis.name}
+            </Badge>
+          ) : null}
           {blind && (
             <Badge className="ml-2 border-teal-500/40 bg-teal-500/10 text-teal-300">
               Slepi popis aktivan
             </Badge>
           )}
         </p>
+        {popisnaLineCount > 0 ? (
+          <Link
+            href="/dashboard/reconciliation"
+            className="mt-2 inline-flex text-sm font-medium text-cyan-400 underline-offset-4 hover:text-cyan-300 hover:underline"
+          >
+            Otvori tabelu popisa i razlika →
+          </Link>
+        ) : null}
       </header>
+
+      {needsActivePopis ? (
+        <Alert className="border-cyan-500/30 bg-cyan-500/10">
+          <AlertTitle className="text-cyan-200">Nema aktivnog popisa</AlertTitle>
+          <AlertDescription className="text-cyan-200/80">
+            Pre uvoza popisne liste i mobilnog rada kreirajte sesiju popisa.{" "}
+            <Link href="/admin/popisi" className="font-medium underline">
+              Popisi i ekipe
+            </Link>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {needsPopisnaImport ? (
         <Alert className="border-amber-500/30 bg-amber-500/10">

@@ -19,6 +19,16 @@ import {
   enrichPopisnaWithCatalog,
   lookupPopisProduct,
 } from "@/lib/merge-popisna-catalog"
+import {
+  countPending,
+  enqueuePendingCount,
+  listPendingCounts,
+  removePendingCount,
+} from "@/lib/offline-count-queue"
+import {
+  getStoredPopisId,
+  setStoredPopisId,
+} from "@/lib/popis-session-storage"
 import { createClient } from "@/lib/supabase/client"
 import { fetchAllPages } from "@/lib/supabase/fetch-all"
 import type {
@@ -26,6 +36,7 @@ import type {
   CountEntry,
   InventorySession,
   PopisnaLine,
+  PopisRecord,
   Product,
   Subscription,
 } from "@/lib/types"
@@ -43,6 +54,10 @@ interface PopisnaImportPayload {
 
 interface InventoryContextValue {
   session: InventorySession
+  activePopis: PopisRecord | null
+  popisi: PopisRecord[]
+  isPopisClosed: boolean
+  pendingOfflineCount: number
   products: Product[]
   popisnaLines: PopisnaLine[]
   counts: CountEntry[]
@@ -64,6 +79,10 @@ interface InventoryContextValue {
   isLoading: boolean
   refreshInventory: () => void
   setBlind: (blind: boolean) => Promise<void>
+  setActivePopis: (popisId: string) => void
+  createPopis: (name: string, teamLabel: string, location?: string) => Promise<PopisRecord>
+  closeActivePopis: () => Promise<void>
+  syncOfflineCounts: () => Promise<number>
   confirmCount: (sku: string, quantity: number) => Promise<void>
   getCountForSku: (sku: string) => number
   getTargetQty: (sku: string) => number
@@ -86,13 +105,38 @@ type CompanyRow = {
   id: string
   name: string
   plan: string
+  plan_type: string | null
   subscription_status: string
+  subscription_active: boolean | null
   seats_total: number
+  max_licenses: number | null
   renews_on: string | null
   session_name: string
   session_location: string
   blind_inventory: boolean
   created_at: string
+}
+
+type PopisRow = {
+  id: string
+  name: string | null
+  team_label: string | null
+  status: string
+  created_at: string
+  expires_at: string | null
+  closed_at: string | null
+}
+
+function mapPopisRow(row: PopisRow): PopisRecord {
+  return {
+    id: row.id,
+    name: row.name ?? "Popis",
+    teamLabel: row.team_label ?? "",
+    status: row.status as PopisRecord["status"],
+    createdAt: row.created_at,
+    expiresAt: row.expires_at ?? row.created_at,
+    closedAt: row.closed_at,
+  }
 }
 
 export function InventoryProvider({ children }: { children: ReactNode }) {
@@ -107,10 +151,16 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   })
   const [subscription, setSubscription] = useState<Subscription>({
     plan: "Pro",
+    planType: "Mediolitics",
     status: "aktivna",
     seatsTotal: 5,
+    maxLicenses: 5,
+    subscriptionActive: true,
     renewsOn: "",
   })
+  const [activePopis, setActivePopisState] = useState<PopisRecord | null>(null)
+  const [popisi, setPopisi] = useState<PopisRecord[]>([])
+  const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
   const [products, setProducts] = useState<Product[]>([])
   const [popisnaLines, setPopisnaLines] = useState<PopisnaLine[]>([])
   const [counts, setCounts] = useState<CountEntry[]>([])
@@ -144,38 +194,55 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       })
       setSubscription({
         plan: row.plan,
+        planType: row.plan_type ?? row.plan ?? "Mediolitics",
         status: row.subscription_status as Subscription["status"],
         seatsTotal: row.seats_total,
+        maxLicenses: row.max_licenses ?? row.seats_total,
+        subscriptionActive: row.subscription_active ?? true,
         renewsOn: row.renews_on ?? "",
       })
     }
 
-    const { data: activeVersion } = await supabase
-      .from("sifrarnik_versions")
-      .select("id")
-      .eq("company_id", orgId)
-      .eq("is_active", true)
-      .order("upload_date", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const [popisResult, versionResult] = await Promise.all([
+      supabase
+        .from("popis")
+        .select("id, name, team_label, status, created_at, expires_at, closed_at")
+        .eq("company_id", orgId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("sifrarnik_versions")
+        .select("id")
+        .eq("company_id", orgId)
+        .eq("is_active", true)
+        .order("upload_date", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
 
-    const { data: activePopis } = await supabase
-      .from("popis")
-      .select("id")
-      .eq("company_id", orgId)
-      .eq("status", "ACTIVE")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const allPopisi = (popisResult.data ?? []).map(mapPopisRow)
+    setPopisi(allPopisi)
 
+    const storedId = getStoredPopisId(orgId)
+    const selectedPopis =
+      allPopisi.find((p) => p.id === storedId && p.status === "ACTIVE") ??
+      allPopisi.find((p) => p.status === "ACTIVE") ??
+      null
+
+    setActivePopisState(selectedPopis)
+    if (selectedPopis && orgId) {
+      setStoredPopisId(orgId, selectedPopis.id)
+    }
+
+    const activeVersion = versionResult.data
     let popisnaLoaded = false
-    if (activePopis) {
+
+    if (selectedPopis) {
       const lines = await fetchAllPages((from, to) =>
         supabase
           .from("popis_items")
           .select("sifra, naziv, bar_kod, ciljana_kolicina, popisano, cena")
           .eq("company_id", orgId)
-          .eq("popis_id", activePopis.id)
+          .eq("popis_id", selectedPopis.id)
           .order("sifra")
           .range(from, to),
       )
@@ -221,14 +288,19 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       setProducts([])
     }
 
-    const events = await fetchAllPages((from, to) =>
-      supabase
+    const events = await fetchAllPages((from, to) => {
+      let query = supabase
         .from("count_events")
-        .select("sifra, profile_id, quantity, confirmed_at")
+        .select("sifra, profile_id, quantity, confirmed_at, popis_id")
         .eq("company_id", orgId)
         .order("confirmed_at")
-        .range(from, to),
-    )
+        .range(from, to)
+
+      if (selectedPopis) {
+        query = query.eq("popis_id", selectedPopis.id)
+      }
+      return query
+    })
 
     setCounts(
       events.map((c) => ({
@@ -238,6 +310,13 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         confirmedAt: c.confirmed_at,
       })),
     )
+
+    if (selectedPopis && orgId) {
+      const pending = await countPending(orgId, selectedPopis.id)
+      setPendingOfflineCount(pending)
+    } else {
+      setPendingOfflineCount(0)
+    }
 
     setIsLoading(false)
     hasLoadedRef.current = true
@@ -386,10 +465,124 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     [productLookup],
   )
 
+  const isPopisClosed = activePopis?.status !== "ACTIVE"
+
+  const setActivePopis = useCallback(
+    (popisId: string) => {
+      if (!orgId) return
+      setStoredPopisId(orgId, popisId)
+      void loadInventory(true)
+    },
+    [orgId, loadInventory],
+  )
+
+  const syncOfflineCounts = useCallback(async () => {
+    if (!user || !orgId || !activePopis) return 0
+    const pending = await listPendingCounts(orgId, activePopis.id)
+    let synced = 0
+
+    for (const item of pending) {
+      const { error } = await supabase.from("count_events").insert({
+        company_id: orgId,
+        profile_id: item.profileId,
+        sifra: item.sku,
+        quantity: item.quantity,
+        popis_id: item.popisId,
+      })
+      if (!error) {
+        await removePendingCount(item.id)
+        synced += 1
+      }
+    }
+
+    if (synced > 0) {
+      await loadInventory(true)
+    } else {
+      setPendingOfflineCount(await countPending(orgId, activePopis.id))
+    }
+    return synced
+  }, [user, orgId, activePopis, supabase, loadInventory])
+
+  useEffect(() => {
+    if (!orgId || !activePopis) return
+
+    const sync = () => {
+      if (navigator.onLine) void syncOfflineCounts()
+    }
+
+    window.addEventListener("online", sync)
+    void syncOfflineCounts()
+
+    return () => window.removeEventListener("online", sync)
+  }, [orgId, activePopis?.id, syncOfflineCounts])
+
+  const createPopis = useCallback(
+    async (name: string, teamLabel: string, location?: string) => {
+      if (!orgId) throw new Error("Nema organizacije")
+
+      const { data, error } = await supabase.rpc("create_popis_session", {
+        p_company_id: orgId,
+        p_name: name,
+        p_team_label: teamLabel || null,
+        p_location: location || null,
+      })
+
+      if (error) throw new Error(error.message)
+      const row = data as PopisRow & { team_label?: string | null }
+      const record = mapPopisRow({
+        id: row.id,
+        name: row.name,
+        team_label: row.team_label ?? null,
+        status: row.status,
+        created_at: row.created_at,
+        expires_at: row.expires_at ?? null,
+        closed_at: row.closed_at ?? null,
+      })
+      setStoredPopisId(orgId, record.id)
+      await loadInventory(true)
+      return record
+    },
+    [orgId, supabase, loadInventory],
+  )
+
+  const closeActivePopis = useCallback(async () => {
+    if (!activePopis) throw new Error("Nema aktivnog popisa")
+
+    const { error } = await supabase.rpc("close_popis_session", {
+      p_popis_id: activePopis.id,
+    })
+
+    if (error) throw new Error(error.message)
+    await loadInventory(true)
+  }, [activePopis, supabase, loadInventory])
+
   const confirmCount = useCallback(
     async (sku: string, quantity: number) => {
-      if (!user || !orgId) {
-        throw new Error("Niste prijavljeni")
+      if (!user || !orgId || !activePopis) {
+        throw new Error("Niste prijavljeni ili nema aktivnog popisa")
+      }
+      if (activePopis.status !== "ACTIVE") {
+        throw new Error("Popis je zatvoren — unos nije moguć")
+      }
+
+      const optimistic: CountEntry = {
+        sku,
+        counterId: user.id,
+        quantity,
+        confirmedAt: new Date().toISOString(),
+      }
+
+      if (!navigator.onLine) {
+        await enqueuePendingCount({
+          orgId,
+          popisId: activePopis.id,
+          profileId: user.id,
+          sku,
+          quantity,
+        })
+        setCounts((prev) => [...prev, optimistic])
+        setPendingOfflineCount((n) => n + 1)
+        return
       }
 
       const { data, error } = await supabase
@@ -399,6 +592,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           profile_id: user.id,
           sifra: sku,
           quantity,
+          popis_id: activePopis.id,
         })
         .select("id, sifra, quantity, confirmed_at, profile_id")
         .single()
@@ -415,7 +609,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         },
       ])
     },
-    [user, orgId, supabase],
+    [user, orgId, activePopis, supabase],
   )
 
   const applyImport = useCallback(
@@ -450,56 +644,18 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         })
         .filter((p): p is NonNullable<typeof p> => p !== null)
 
-      await supabase
-        .from("sifrarnik_versions")
-        .update({ is_active: false })
-        .eq("company_id", orgId)
-
       const versionLabel = `v${new Date().toISOString().slice(0, 10)}`
-      const { data: version } = await supabase
-        .from("sifrarnik_versions")
-        .insert({
-          company_id: orgId,
-          version: versionLabel,
-          is_active: true,
-          column_mapping: mapping,
-        })
-        .select("id")
-        .single()
+      const { data: importedCount, error: importError } = await supabase.rpc(
+        "replace_sifrarnik_for_company",
+        {
+          p_company_id: orgId,
+          p_version_label: versionLabel,
+          p_column_mapping: mapping,
+          p_items: imported,
+        },
+      )
 
-      if (!version) return 0
-
-      if (imported.length > 0) {
-        await supabase.from("sifrarnik_items").insert(
-          imported.map((p) => ({
-            sifrarnik_version_id: version.id,
-            ...p,
-          })),
-        )
-      }
-
-      await supabase.from("count_events").delete().eq("company_id", orgId)
-      await supabase
-        .from("profiles")
-        .update({ items_counted: 0, financial_value: 0 })
-        .eq("company_id", orgId)
-
-      const {
-        data: { user: authUser },
-      } = await supabase.auth.getUser()
-      if (!authUser) return 0
-
-      const popisId = `POPIS-${orgId.slice(0, 8)}`
-      await supabase.from("popis").upsert({
-        id: popisId,
-        company_id: orgId,
-        created_by: authUser.id,
-        end_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        status: "ACTIVE",
-        sifrarnik_version_id: version.id,
-      })
-
-      await supabase.from("popis_items").delete().eq("company_id", orgId)
+      if (importError) throw new Error(importError.message)
 
       await supabase
         .from("companies")
@@ -507,7 +663,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         .eq("id", orgId)
 
       await loadInventory()
-      return imported.length
+      return Number(importedCount ?? imported.length)
     },
     [orgId, user, supabase, loadInventory],
   )
@@ -515,6 +671,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const applyPopisnaImport = useCallback(
     async ({ mapping, rows }: PopisnaImportPayload) => {
       if (!orgId) throw new Error("Nema organizacije")
+      if (!activePopis || activePopis.status !== "ACTIVE") {
+        throw new Error("Kreirajte ili izaberite aktivni popis pre uvoza")
+      }
 
       const skuCol = mapping.sku
       const qtyCol = mapping.expectedQty
@@ -539,6 +698,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           p_company_id: orgId,
           p_rows: chunk,
           p_reset: i === 0,
+          p_popis_id: activePopis.id,
         })
 
         if (error) {
@@ -560,12 +720,16 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         missing: totalMissing,
       }
     },
-    [orgId, supabase, loadInventory],
+    [orgId, activePopis, supabase, loadInventory],
   )
 
   const value = useMemo<InventoryContextValue>(
     () => ({
       session,
+      activePopis,
+      popisi,
+      isPopisClosed,
+      pendingOfflineCount,
       products,
       popisnaLines: enrichedPopisnaLines,
       counts,
@@ -582,6 +746,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       isLoading,
       refreshInventory,
       setBlind,
+      setActivePopis,
+      createPopis,
+      closeActivePopis,
+      syncOfflineCounts,
       confirmCount,
       getCountForSku,
       getTargetQty,
@@ -591,6 +759,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }),
     [
       session,
+      activePopis,
+      popisi,
+      isPopisClosed,
+      pendingOfflineCount,
       products,
       enrichedPopisnaLines,
       counts,
@@ -606,6 +778,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       isLoading,
       refreshInventory,
       setBlind,
+      setActivePopis,
+      createPopis,
+      closeActivePopis,
+      syncOfflineCounts,
       confirmCount,
       getCountForSku,
       getTargetQty,

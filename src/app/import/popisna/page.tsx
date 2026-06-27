@@ -30,7 +30,7 @@ const STEPS = [
 
 function PopisnaImportContent() {
   const router = useRouter()
-  const { applyPopisnaImport, products } = useInventory()
+  const { applyPopisnaImport, products, activePopis } = useInventory()
   const [currentStep, setCurrentStep] = useState(1)
   const [file, setFile] = useState<File | null>(null)
   const [parsed, setParsed] = useState<Awaited<ReturnType<typeof parseFile>> | null>(
@@ -109,9 +109,20 @@ function PopisnaImportContent() {
           </div>
         </div>
         <p className="rounded-lg border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-sm text-teal-100/90">
-          Popisna lista je <strong>odvojena</strong> od šifrarnika. Uvoz zamenjuje
-          stavke popisa za ovu sesiju i povezuje ih sa šifrarnikom po šifri (ili
-          barkodu / kataloškom broju).
+          {activePopis ? (
+            <>
+              Uvoz ide u popis: <strong>{activePopis.name}</strong>
+              {activePopis.teamLabel ? ` (${activePopis.teamLabel})` : ""}. Popisna
+              lista je odvojena od šifrarnika.
+            </>
+          ) : (
+            <>
+              <Link href="/admin/popisi" className="font-medium underline">
+                Prvo kreirajte popis
+              </Link>{" "}
+              pre uvoza popisne liste.
+            </>
+          )}
         </p>
         <WizardStepper steps={STEPS} currentStep={currentStep} />
       </div>

@@ -8,9 +8,11 @@ import {
   EyeOff,
   Flashlight,
   Keyboard,
+  Lock,
   LogOut,
   ScanBarcode,
   ScanLine,
+  WifiOff,
 } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
@@ -18,6 +20,13 @@ import { useInventory } from "@/context/InventoryContext"
 import { NumericKeypad } from "@/components/count/numeric-keypad"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import {
   attachStreamToVideo,
@@ -32,13 +41,20 @@ export function PopisMobileView() {
   const {
     session,
     blind,
+    activePopis,
+    popisi,
+    isPopisClosed,
+    pendingOfflineCount,
     popisnaLineCount,
     isLoading,
+    setActivePopis,
     getProduct,
     getCountForSku,
     getTargetQty,
     confirmCount,
   } = useInventory()
+
+  const activePopisi = popisi.filter((p) => p.status === "ACTIVE")
 
   const [product, setProduct] = useState<ReturnType<typeof getProduct>>(null)
   const [quantity, setQuantity] = useState("1")
@@ -215,6 +231,29 @@ export function PopisMobileView() {
     )
   }
 
+  if (!activePopis) {
+    return (
+      <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-zinc-950 px-6 text-center">
+        <p className="text-lg font-semibold text-zinc-100">Nema aktivnog popisa</p>
+        <p className="text-sm text-zinc-500">
+          Predsednik komisije mora prvo kreirati popis na računaru.
+        </p>
+      </div>
+    )
+  }
+
+  if (isPopisClosed) {
+    return (
+      <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-zinc-950 px-6 text-center">
+        <Lock className="size-10 text-rose-400/70" />
+        <p className="text-lg font-semibold text-zinc-100">Popis je zatvoren</p>
+        <p className="text-sm text-zinc-500">
+          „{activePopis.name}" više ne prima unose.
+        </p>
+      </div>
+    )
+  }
+
   if (popisnaLineCount === 0) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-zinc-950 px-6 text-center">
@@ -231,11 +270,17 @@ export function PopisMobileView() {
       <header className="z-20 flex shrink-0 items-center justify-between border-b border-cyan-500/10 bg-zinc-950 px-4 py-2.5">
         <div>
           <p className="text-[10px] uppercase tracking-wider text-zinc-500">
-            {session.name}
+            {activePopis.name}
           </p>
           <p className="text-sm font-semibold text-zinc-100">{user?.displayName}</p>
         </div>
         <div className="flex items-center gap-2">
+          {pendingOfflineCount > 0 ? (
+            <Badge className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-200">
+              <WifiOff className="size-3" />
+              {pendingOfflineCount} offline
+            </Badge>
+          ) : null}
           <Badge className="border-cyan-500/30 bg-cyan-500/10 text-[10px] text-cyan-300">
             {popisnaLineCount} stavki
           </Badge>
@@ -255,6 +300,24 @@ export function PopisMobileView() {
           </Button>
         </div>
       </header>
+
+      {activePopisi.length > 1 ? (
+        <div className="shrink-0 border-b border-cyan-500/10 bg-zinc-950 px-4 py-2">
+          <Select value={activePopis.id} onValueChange={setActivePopis}>
+            <SelectTrigger className="h-10 w-full border-cyan-500/20 bg-zinc-900/60">
+              <SelectValue placeholder="Izaberi popis" />
+            </SelectTrigger>
+            <SelectContent>
+              {activePopisi.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                  {p.teamLabel ? ` · ${p.teamLabel}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
 
       <div className="relative min-h-0 flex-1">
         <video
